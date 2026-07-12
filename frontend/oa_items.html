@@ -78,22 +78,21 @@
     async function submitSync() {
       const input = document.getElementById("syncPwd");
       let pwd = input ? input.value : "";
-      // 提交后立即清空输入框与本地变量，密码不进入 storage / URL
+      // 提交后立即清空输入框；构造请求体后尽早清空 JS 变量，密码不进入 storage / URL
       clearSyncPassword();
       if (!pwd) {
         toast("未输入密码", "error");
         pwd = "";
         return;
       }
+      const payload = JSON.stringify({ password: pwd });
+      pwd = "";
       closeSyncModal();
       try {
         const r = await api("/api/oa/sync", {
           method: "POST",
-          body: JSON.stringify({
-            password: pwd,
-          }),
+          body: payload,
         });
-        pwd = "";
         if (!r.success) {
           toast(r.message || "同步失败", "error");
         } else {
