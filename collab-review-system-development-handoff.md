@@ -60,17 +60,20 @@
 
 当前最近提交：
 
+- `13010b9 Clear OA sync password variable before request`
+- `643711a Harden OA sync account binding and failure handling`
+- `92e409d Add handoff doc with original filename`
+- `196f71b Add development handoff documentation`
 - `73295de Add OA work item synchronization`
 - `4e584ee Add optional OA authentication adapter`
 - `e7b2f05 Close assignment and creation permission gaps`
 - `85bc9b7 Add office assignment and supervision workflow`
-- `f9e20b5 Harden item permissions and upload validation`
-- `2ef8aa2 Initial MVP for collaboration review system`
 
 当前测试结果：
 
-- `pytest -q`
-- 结果：`49 passed`
+- `.venv/bin/python -m pytest -q -s`
+- 结果：`52 passed`
+- 说明：直接 `pytest -q` 曾遇到 pytest 输出捕获临时文件异常；关闭捕获后业务测试全部通过。
 
 ## 3. 角色设计
 
@@ -188,168 +191,134 @@ HAR 中观察到的列表入口：
 - 登录后进入“OA 公文池”，确认五类列表数据是否同步。
 - 点“进入协同办理”后，生成系统内事项，再分派承办人、A/B 领导。
 
-## 6. 当前审查发现的问题
+## 6. 2026-07-12 晚本轮修复和审查记录
 
-以下是最近一次代码审查发现，需要下一轮优先修：
+本轮目标是修复 OA 公文同步上线前的安全和可靠性问题。已完成、已审查、已推送到 GitHub `main`。
 
-### 6.1 高优先级：手动同步可串 OA 账号数据
+相关提交：
+
+- `643711a Harden OA sync account binding and failure handling`
+- `13010b9 Clear OA sync password variable before request`
+
+### 6.1 已修复：手动同步可串 OA 账号数据
 
 位置：
 
 - `app/routers/oa.py`
 - `POST /api/oa/sync`
 
-问题：
+修复结果：
 
-- 接口允许前端传 `username`。
-- 后端发现 OA 返回账号和当前登录账号不一致时，没有拒绝，而是直接放行。
-- 这可能导致当前用户用别人的 OA 账号密码，把别人的 OA 公文同步进自己的公文池。
+- 后端忽略请求体里的 `username`，统一使用当前登录用户 `user.username` 去登录 OA。
+- 如果 OA 返回的 `profile.username` 与当前登录用户不一致，直接返回 403。
+- 403 提示：`OA 账号与当前登录用户不一致，禁止同步他人公文`。
+- 不匹配账号的数据不会写入 `OAWorkItem`。
+- 代码里保留 TODO：未来如果确实存在“本地账号和 OA 编号不同”，应由管理员维护正式映射表后再放行。
 
-建议修复：
+新增测试：
 
-- 手动同步不允许传任意 username。
-- 默认只使用当前登录用户 `user.username`。
-- 如果 OA 返回的 `profile.username != user.username`，直接返回 403。
-- 如果单位存在“系统账号和 OA 编号不同”的情况，应新增正式账号映射字段或映射表，由管理员维护。
+- 当前用户 `handler1` 即使请求体传 `username=other_user`，后端仍用 `handler1` 调 OA。
+- mock OA 返回 `profile.username=other_user` 时，接口返回 403，且 `OAWorkItem` 不新增。
+- 正常手动同步仍可用。
 
-建议新增测试：
-
-- 当前用户 `handler1` 调用 `/api/oa/sync`，mock OA 返回 `profile.username="other_user"`，应返回 403。
-- 确认没有写入 `OAWorkItem`。
-
-### 6.2 中高优先级：手动同步密码输入不应使用 prompt
+### 6.2 已修复：手动同步密码输入不应使用 prompt
 
 位置：
 
 - `frontend/oa_items.html`
 
-问题：
+修复结果：
 
-- 当前用 `window.prompt()` 输入 OA 密码。
-- prompt 是普通文本输入，不适合密码场景。
-- 在办公室、投屏、旁人经过时容易暴露密码。
+- 移除 `window.prompt()`。
+- 改为页面内 modal。
+- 密码框使用 `<input type="password">`。
+- 点击确认后立即清空输入框。
+- 构造请求体后马上清空 JS 变量 `pwd`，网络请求只使用已经构造好的 `payload`。
+- 密码不进入 `localStorage`、`sessionStorage`、URL、日志。
 
-建议修复：
+二次审查发现过一个小问题：第一次修复时 `pwd` 变量在 `await api(...)` 返回后才清空。已通过提交 `13010b9` 修正为发请求前清空。
 
-- 改为页面内弹窗。
-- 使用 `<input type="password">`。
-- 提交后立即清空输入框和变量。
-- 不写入 `localStorage`、`sessionStorage`、URL。
-
-### 6.3 中优先级：登录后自动同步入库失败可能影响登录
+### 6.3 已修复：登录后自动同步入库失败可能影响登录
 
 位置：
 
 - `app/routers/auth.py`
 - `_login_oa()`
 
-问题：
+修复结果：
 
-- OA 列表拉取失败已经做了“不影响登录”的处理。
-- 但 `sync_oa_work_items()` 入库失败没有兜底。
-- 如果数据库锁、字段异常、唯一键异常，可能导致 OA 登录直接 500。
+- 对 `sync_oa_work_items()` 单独加 `try/except`。
+- 入库失败时执行 `db.rollback()`。
+- OA 登录成功后，即使公文入库失败，仍返回登录成功并签发 JWT。
+- `oa_sync.enabled=true`。
+- `oa_sync.success=false`。
+- 返回给前端的错误为通用文案：`OA 登录成功但公文入库失败，请稍后重试或联系管理员`。
+- 日志只记录异常类型，不输出密码、cookie、token 或完整请求内容。
 
-建议修复：
-
-- 对 `sync_oa_work_items()` 加 `try/except`。
-- 失败时 `db.rollback()`。
-- 仍然返回登录成功和 JWT。
-- `oa_sync` 中返回 `success=false` 和简短错误。
-- 日志只记录异常类型，不输出密码、cookie、token。
-
-建议新增测试：
+新增测试：
 
 - mock `authenticate_and_fetch_oa()` 成功返回列表。
 - mock `sync_oa_work_items()` 抛异常。
-- 登录仍应 200，`oa_sync.success=false`。
+- 登录仍返回 200，`oa_sync.success=false`，且敏感异常内容不会返回给前端。
 
-### 6.4 低优先级：离线构建脚本默认输出目录不通用
+### 6.4 已修复：离线构建脚本默认输出目录不通用
 
 位置：
 
 - `scripts/build-and-export.sh`
+- `README.md`
 
-问题：
+修复结果：
 
-- 默认输出目录是个人 Windows 路径。
-- 在内网 Ubuntu 上可能不存在或不可写。
+- 默认 `OUT_DIR` 改为仓库内 `dist/`。
+- 仍支持通过第一个参数指定输出目录。
+- README 增加离线构建导出说明。
+- `.gitignore` 已包含 `dist/`。
 
-建议修复：
+### 6.5 已修复：README 旧 OA 描述
 
-- 默认输出到仓库内 `dist/`。
-- 需要桌面目录时，手动传参数。
+位置：
 
-## 7. 推荐给 Grok 的下一轮开发提示词
+- `README.md`
 
-可以直接复制下面提示词给 Grok：
+修复结果：
 
-```text
-你现在继续开发 GitHub 仓库 mifengac/collab-review-system，本地目录是 /home/longshao/project/collab-review-system。
+- 删除“OA sync 是 mock、不写库”的旧描述。
+- 改为当前真实状态：OA 登录适配已实现，OA 公文池同步写入 `oa_work_items`。
+- 说明主要接口：`/api/oa/items`、`/api/oa/stats`、`/api/oa/sync`、`/api/oa/items/{id}/create-collab`。
+- 说明第一版限制：不下载附件、不读正文、不回写 OA。
 
-目标：修复 OA 公文同步上线前的安全和可靠性问题。不要重构无关代码，不要提交 .env、数据库、上传文件、真实 OA 账号密码、cookie、HAR。
+## 7. 回家继续开发建议
 
-请完成以下修改：
+建议先从“真实 OA 联调”开始，不要急着接 ONLYOFFICE。现在代码里的安全兜底已经补上，可以更安心地拿真实 OA 环境验证。
 
-1. 修复手动 OA 同步串号风险
-   - 接口：POST /api/oa/sync
-   - 不允许普通用户通过请求体指定任意 OA username。
-   - 手动同步默认只能使用当前登录用户 user.username。
-   - 如果 authenticate_and_fetch_oa 返回的 profile.username 与当前登录用户 user.username 不一致，返回 403，提示“OA 账号与当前登录用户不一致，禁止同步他人公文”。
-   - 不要把不匹配账号的数据写入 OAWorkItem。
-   - 如果未来要支持账号映射，请只在代码注释或 TODO 中说明，不要现在放行。
+推荐顺序：
 
-2. 修改前端 OA 密码输入
-   - 文件：frontend/oa_items.html
-   - 不要再用 window.prompt 输入 OA 密码。
-   - 改为页面内弹窗或简洁 modal，使用 <input type="password">。
-   - 提交后立即清空输入框和 JS 变量。
-   - 密码不得进入 localStorage、sessionStorage、URL、日志。
-   - 保持现有中文界面风格。
+1. `git pull` 确认拿到 `13010b9`。
+2. 复制 `.env.example` 为 `.env`，配置 `AUTH_MODE=mixed` 和真实 `OA_BASE_URL`。
+3. 先关闭 `OA_SYNC_ON_LOGIN`，只验证 OA 登录是否能创建/更新本地用户。
+4. 再开启 `OA_SYNC_ON_LOGIN=true`，登录后看“OA 公文池”五个模块是否有数据。
+5. 如果某个模块没有数据，抓该模块 HAR，对比 `/hmoa/s` 的 `service`、query、form 参数。
+6. 用“重新同步”按钮测一次手动同步，确认密码 modal、账号一致性校验、403 提示都正常。
+7. 点“进入协同办理”，确认 OA 公文能生成系统内事项。
 
-3. 修复登录后自动同步入库失败会影响登录的问题
-   - 文件：app/routers/auth.py
-   - 在 _login_oa() 中，对 sync_oa_work_items() 单独 try/except。
-   - 如果 OA 登录成功、列表拉取成功，但入库失败：
-     - db.rollback()
-     - 仍然登录成功并签发 JWT
-     - oa_sync.enabled=true
-     - oa_sync.success=false
-     - oa_sync.error 返回“OA 登录成功但公文入库失败，请稍后重试或联系管理员”
-   - 日志只能记录异常类型，不要输出密码、cookie、token。
+继续开发时优先看这些文件：
 
-4. 调整离线构建脚本默认输出目录
-   - 文件：scripts/build-and-export.sh
-   - 默认 OUT_DIR 改为仓库内 dist/。
-   - 保留传入第一个参数覆盖输出目录的能力。
-   - README 或部署说明同步更新。
-
-5. 补充测试
-   - 当前用户 handler1 手动同步时，mock OA 返回 profile.username=other_user，应返回 403，且 OAWorkItem 不新增。
-   - 登录后自动同步时，mock sync_oa_work_items 抛异常，登录仍返回 200，oa_sync.success=false。
-   - 确认正常手动同步仍可用。
-
-完成后运行：
-pytest -q
-
-提交并推送到 GitHub main 分支，提交信息建议：
-Harden OA sync account binding and failure handling
-
-最后汇报：
-- 修改了哪些文件
-- 修复了哪些风险
-- 新增了哪些测试
-- pytest 结果
-- 是否已 push
-```
+- `app/services/oa_client.py`：OA 五类公文列表参数和字段解析。
+- `app/services/oa_auth.py`：OA 登录、用户信息解析。
+- `app/routers/oa.py`：OA 公文池接口和从 OA 创建协同事项。
+- `app/routers/auth.py`：OA 登录后自动同步逻辑。
+- `frontend/oa_items.html`：OA 公文池页面。
+- `tests/test_oa_sync.py`：OA 同步相关测试。
 
 ## 8. 后续路线建议
 
 短期优先：
 
-1. 先修第 6 节三个安全/可靠性问题。
-2. 在内网用真实 OA 账号测试五类公文池是否都有数据。
-3. 如果某一类公文不同步，抓取该模块 HAR，对比 `/hmoa/s` 的 `service`、query、form 参数。
-4. 增加“同步日志”页面，方便看每次同步成功、失败、拉取数量、错误摘要。
+1. 在内网用真实 OA 账号测试五类公文池是否都有数据。
+2. 如果某一类公文不同步，抓取该模块 HAR，对比 `/hmoa/s` 的 `service`、query、form 参数。
+3. 增加“同步日志”页面，方便看每次同步成功、失败、拉取数量、错误摘要。
+4. 梳理本地账号与 OA `userCode` 是否一定一致；如果不一致，设计管理员维护的账号映射表，不要临时放行任意 username。
 
 中期建议：
 
