@@ -17,7 +17,7 @@
 | 操作留痕 | 创建/上传/下载/提交/通过/退回/定稿/归档 等时间线 |
 | 字典 | 四个大队 + 15 个业务标签预置 |
 | ONLYOFFICE 预留 | `GET /api/documents/{id}/editor-config`、`POST /api/office/callback/{document_id}` |
-| OA 预留 | 表字段 + `GET /api/oa/inbox`、`POST /api/oa/sync`（mock） |
+| OA 公文池 | 登录适配 + 公文列表同步写入 `oa_work_items`；主要接口 `/api/oa/items`、`/stats`、`/sync`、`/items/{id}/create-collab`（第一版不下载附件/正文、不回写 OA） |
 
 ## 技术栈
 
@@ -247,6 +247,20 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+### 离线构建导出（内网 docker load）
+
+在可联网机器上构建镜像并导出 tar，再拷贝到内网：
+
+```bash
+# 默认导出到仓库内 dist/（已 gitignore）
+./scripts/build-and-export.sh
+
+# 也可指定输出目录
+./scripts/build-and-export.sh /path/to/export-dir
+```
+
+脚本会构建 `collab-review-system:1.0.0`，导出 `.tar` / `.tar.gz`，并复制 `docker-compose.yml`、`.env.example` 与内网部署说明。
+
 停止：
 
 ```bash
@@ -304,16 +318,26 @@ DATABASE_URL=postgresql://user:password@host:54321/collab_review
 2. 实现真实 `editor-config`（文档下载 URL、JWT、callback）  
 3. 在 callback 中拉取编辑后文件并 `save_upload` 生成新版本  
 
-## OA 预留
+## OA 对接状态（当前实现）
 
-表 `items` 字段：`oa_flow_id`、`oa_step_id`、`oa_deal_index`、`oa_raw_title`、`oa_raw_doc_no`。
+**OA 登录适配已实现**（`AUTH_MODE=oa|mixed`，见上文「OA 登录适配」）。  
+**OA 公文池同步已实现**：拉取五个模块列表元数据，写入 `oa_work_items` 表；**不会**自动为每条公文创建协同事项。
 
-接口：
+主要接口：
 
-- `GET /api/oa/inbox` — 当前返回一条 mock 待办  
-- `POST /api/oa/sync` — 返回成功提示，不写库  
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/oa/items` | 当前用户公文池列表（可按模块/关键词筛选） |
+| GET | `/api/oa/stats` | 各模块数量与最近同步时间 |
+| POST | `/api/oa/sync` | 手动同步（本次输入 OA 密码；**忽略请求体 username**，仅用当前登录用户） |
+| POST | `/api/oa/items/{id}/create-collab` | 从公文创建/打开协同事项 |
+| GET | `/api/oa/inbox` | 兼容旧接口：返回当前用户「待办」模块摘要（非 mock） |
 
-**不要**提交真实 OA 抓包、cookie、账号密码。对接时建议独立 `services/oa_client.py`，凭据仅放运行环境变量。
+协同事项表仍保留 OA 关联字段：`oa_flow_id`、`oa_step_id`、`oa_deal_index`、`oa_raw_title`、`oa_raw_doc_no`。
+
+**第一版限制**：不下载附件、不读正文、不回写 OA。手动同步时若 OA 返回的账号与当前登录用户不一致，返回 403，不写库。
+
+**不要**提交真实 OA 抓包、cookie、账号密码。凭据仅放运行环境变量。
 
 ## 安全与内网部署注意
 

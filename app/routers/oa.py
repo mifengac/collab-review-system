@@ -150,8 +150,11 @@ def oa_sync(
     db: Annotated[Session, Depends(get_db)],
 ):
     """
-    手动同步：必须提供 username/password 临时登录 OA。
+    手动同步：必须提供 password 临时登录 OA。
     不保存密码；会话仅存在于本次请求。
+
+    始终使用当前登录用户 user.username 登录 OA。
+    请求体 username 字段仅兼容旧前端，后端忽略，禁止指定任意 OA 账号。
     """
     settings = get_settings()
     if not settings.oa_base_url:
@@ -163,7 +166,9 @@ def oa_sync(
             total=0,
         )
 
-    username = (body.username or "").strip() or user.username
+    # 忽略 body.username，统一用当前登录用户，防止串号写入他人公文池。
+    # TODO: 若未来需支持「本地账号与 OA 编号不同」，由管理员维护映射表后再放行；当前禁止任意指定 OA 账号。
+    username = user.username.strip()
     password = body.password or ""
     if not password:
         return OASyncResponse(
@@ -187,10 +192,12 @@ def oa_sync(
     except OAAuthUnavailable as exc:
         raise HTTPException(status_code=503, detail=exc.message) from exc
 
-    # 仅允许同步到当前登录用户（防止用他人 OA 账号写入）
+    # 仅允许同步到当前登录用户（防止 OA 返回他人 profile 时写入）
     if profile.username.strip() != user.username.strip():
-        # 若本地用户名与 OA userCode 不一致，仍写入当前会话用户
-        pass
+        raise HTTPException(
+            status_code=403,
+            detail="OA 账号与当前登录用户不一致，禁止同步他人公文",
+        )
 
     if fetch_err and not items:
         return OASyncResponse(

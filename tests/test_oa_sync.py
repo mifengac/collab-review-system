@@ -303,9 +303,133 @@ def test_manual_sync_with_password(client: TestClient):
         assert r.json()["total"] >= 1
         # 密码不应被服务端持久化到任何地方；这里验证调用只发生一次且无异常
         assert m.called
+        call_username = m.call_args.args[0] if m.call_args.args else m.call_args.kwargs.get("username")
+        assert call_username == "handler1"
 
     # 无密码提示
     r2 = client.post("/api/oa/sync", headers=h, json={})
     assert r2.status_code == 200
     assert r2.json()["success"] is False
     assert "密码" in r2.json()["message"]
+
+
+def test_manual_sync_ignores_body_username_uses_current_user(client: TestClient):
+    """请求体传他人 username 时，后端仍用当前登录用户 handler1 调 OA。"""
+    os.environ["AUTH_MODE"] = "local"
+    get_settings.cache_clear()
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    fi = normalize_oa_item(
+        "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-IGNORE-BODY-USER"}
+    )
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, [fi], None),
+    ) as m:
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={
+                "username": "other_user",
+                "password": "any-password",
+                "modules": ["todo"],
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["success"] is True
+    assert m.called
+    # 第一个位置参数为 username，必须是当前用户而非 body 中的 other_user
+    call_username = m.call_args.args[0] if m.call_args.args else m.call_args.kwargs.get("username")
+    assert call_username == "handler1"
+    assert call_username != "other_user"
+
+
+def test_manual_sync_profile_mismatch_403_no_write(client: TestClient):
+    """OA 返回的 profile.username 与当前用户不一致时 403，且不写入 OAWorkItem。"""
+    os.environ["AUTH_MODE"] = "local"
+    get_settings.cache_clear()
+    h = _login(client, "handler1", "Demo@123456")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        before = (
+            db.query(OAWorkItem).filter(OAWorkItem.owner_user_id == user.id).count()
+        )
+    finally:
+        db.close()
+
+    profile = OAUserProfile(username="other_user", display_name="他人", unit=None)
+    fi = normalize_oa_item(
+        "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-MISMATCH-403"}
+    )
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, [fi], None),
+    ):
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={"password": "any-password", "modules": ["todo"]},
+        )
+    assert r.status_code == 403, r.text
+    assert "不一致" in r.json()["detail"]
+    assert "禁止同步他人公文" in r.json()["detail"]
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        after = (
+            db.query(OAWorkItem).filter(OAWorkItem.owner_user_id == user.id).count()
+        )
+        leaked = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.flowinid == "FLOW-MISMATCH-403")
+            .count()
+        )
+        assert after == before
+        assert leaked == 0
+    finally:
+        db.close()
+
+
+def test_oa_login_sync_db_fail_still_login(client: TestClient):
+    """登录后入库失败：仍 200 签发 JWT，oa_sync.success=false，错误为通用文案。"""
+    os.environ["AUTH_MODE"] = "oa"
+    os.environ["OA_SYNC_ON_LOGIN"] = "true"
+    get_settings.cache_clear()
+
+    profile = OAUserProfile(
+        username="oa_sync_db_fail",
+        display_name="入库失败用户",
+        unit="办公室",
+    )
+    fi = normalize_oa_item(
+        "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-DB-FAIL"}
+    )
+    sensitive = "SECRET_COOKIE=abc; password=leaked-token-xyz"
+
+    with patch(
+        "app.routers.auth.authenticate_and_fetch_oa",
+        return_value=(profile, [fi], None),
+    ), patch(
+        "app.routers.auth.sync_oa_work_items",
+        side_effect=RuntimeError(sensitive),
+    ):
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "oa_sync_db_fail", "password": "oa-pass-secret"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["user"]["username"] == "oa_sync_db_fail"
+    assert body["access_token"]
+    assert body["oa_sync"]["enabled"] is True
+    assert body["oa_sync"]["success"] is False
+    err = body["oa_sync"]["error"] or ""
+    assert err == "OA 登录成功但公文入库失败，请稍后重试或联系管理员"
+    # 不得把异常敏感内容返回给前端
+    assert "SECRET_COOKIE" not in err
+    assert "leaked-token" not in err
+    assert "oa-pass-secret" not in r.text
+    assert sensitive not in r.text

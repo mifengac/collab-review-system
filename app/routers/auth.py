@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Annotated
 
@@ -33,6 +34,8 @@ from app.services.oa_auth import (
     authenticate_oa_user,
 )
 from app.services.oa_sync import sync_oa_work_items
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -112,7 +115,21 @@ def _login_oa(db: Session, username: str, password: str) -> tuple[User, OASyncSt
                     success=False,
                     error=fetch_err,
                 )
-            stats = sync_oa_work_items(db, user, profile.username, items)
+            # 入库失败不影响已成功的 OA 登录与 JWT 签发
+            try:
+                stats = sync_oa_work_items(db, user, profile.username, items)
+            except Exception as exc:
+                db.rollback()
+                # 仅记录异常类型，不输出密码、cookie、token 或完整请求内容
+                logger.warning(
+                    "OA work items sync after login failed: %s",
+                    type(exc).__name__,
+                )
+                return user, OASyncStatusOut(
+                    enabled=True,
+                    success=False,
+                    error="OA 登录成功但公文入库失败，请稍后重试或联系管理员",
+                )
             return user, OASyncStatusOut(
                 enabled=True,
                 success=True,

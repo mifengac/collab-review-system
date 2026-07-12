@@ -55,24 +55,45 @@
       }
     }
 
-    async function doSync() {
-      const pwd = prompt(
-        "请输入 OA 密码以重新同步（系统不保存密码；也可在登录时开启 OA_SYNC_ON_LOGIN）"
-      );
-      if (pwd === null) return;
+    function clearSyncPassword() {
+      const input = document.getElementById("syncPwd");
+      if (input) input.value = "";
+    }
+
+    function closeSyncModal() {
+      const mask = document.getElementById("syncModalMask");
+      if (mask) mask.classList.remove("show");
+      clearSyncPassword();
+    }
+
+    function openSyncModal() {
+      const mask = document.getElementById("syncModalMask");
+      if (!mask) return;
+      clearSyncPassword();
+      mask.classList.add("show");
+      const input = document.getElementById("syncPwd");
+      if (input) setTimeout(() => input.focus(), 0);
+    }
+
+    async function submitSync() {
+      const input = document.getElementById("syncPwd");
+      let pwd = input ? input.value : "";
+      // 提交后立即清空输入框与本地变量，密码不进入 storage / URL
+      clearSyncPassword();
       if (!pwd) {
         toast("未输入密码", "error");
+        pwd = "";
         return;
       }
+      closeSyncModal();
       try {
-        const me = getUser() || {};
         const r = await api("/api/oa/sync", {
           method: "POST",
           body: JSON.stringify({
-            username: me.username,
             password: pwd,
           }),
         });
+        pwd = "";
         if (!r.success) {
           toast(r.message || "同步失败", "error");
         } else {
@@ -83,8 +104,13 @@
         }
         await load();
       } catch (e) {
+        pwd = "";
         toast(e.message, "error");
       }
+    }
+
+    function doSync() {
+      openSyncModal();
     }
 
     async function loadList() {
@@ -166,6 +192,25 @@
             </div>
           </div>
           <p class="hint">说明：第一版仅同步列表元数据，不下载附件/正文，不回写 OA。进入协同办理后在本系统完成审核流转。</p>
+          <div class="modal-mask" id="syncModalMask">
+            <div class="modal" style="width:400px">
+              <div class="modal-hd">
+                <span>OA 重新同步</span>
+                <button type="button" class="close" id="syncModalClose">&times;</button>
+              </div>
+              <div class="modal-bd">
+                <p class="hint" style="margin-top:0">系统不保存 OA 密码。也可在登录时开启 OA_SYNC_ON_LOGIN 自动同步。</p>
+                <div class="form-group">
+                  <label for="syncPwd">OA 密码</label>
+                  <input type="password" id="syncPwd" autocomplete="current-password" placeholder="请输入 OA 密码" />
+                </div>
+              </div>
+              <div class="modal-ft">
+                <button type="button" class="btn" id="syncModalCancel">取消</button>
+                <button type="button" class="btn btn-primary" id="syncModalOk">确认同步</button>
+              </div>
+            </div>
+          </div>
         `;
 
         document.getElementById("tabs").onclick = async (e) => {
@@ -179,6 +224,15 @@
           if (e.key === "Enter") loadList();
         });
         document.getElementById("btnSync").onclick = doSync;
+        document.getElementById("syncModalClose").onclick = closeSyncModal;
+        document.getElementById("syncModalCancel").onclick = closeSyncModal;
+        document.getElementById("syncModalOk").onclick = submitSync;
+        document.getElementById("syncPwd").addEventListener("keydown", (e) => {
+          if (e.key === "Enter") submitSync();
+        });
+        document.getElementById("syncModalMask").addEventListener("click", (e) => {
+          if (e.target.id === "syncModalMask") closeSyncModal();
+        });
         await loadList();
       } catch (e) {
         root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;

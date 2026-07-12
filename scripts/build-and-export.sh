@@ -8,7 +8,8 @@ cd "$ROOT"
 IMAGE_NAME="${IMAGE_NAME:-collab-review-system}"
 IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
 FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
-OUT_DIR="${1:-/mnt/c/Users/45041/Desktop/local_doc/202607/0712}"
+# 默认导出到仓库内 dist/；可用第一个参数覆盖，例如：./scripts/build-and-export.sh /path/to/out
+OUT_DIR="${1:-$ROOT/dist}"
 TAR_NAME="${IMAGE_NAME}-${IMAGE_TAG}.tar"
 
 mkdir -p "$OUT_DIR"
