@@ -181,6 +181,7 @@ function renderShell(active, title) {
         <div class="brand">材料协同办理</div>
         <nav>
           <a href="/index.html" class="${active === "dashboard" ? "active" : ""}">工作台</a>
+          <a href="/oa_items.html" class="${active === "oa" ? "active" : ""}">OA 公文池</a>
           <a href="/items.html" class="${active === "items" ? "active" : ""}">事项列表</a>
           <a href="/item_form.html" class="${active === "new" ? "active" : ""}">新建事项</a>
           <a href="/settings.html" class="${active === "settings" ? "active" : ""}">系统设置</a>

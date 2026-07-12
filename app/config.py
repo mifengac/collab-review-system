@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     oa_pki_path: str = "/hportal/Login/checkUserPKI.jsp"
     oa_user_num_path: str = "/hitem/api/getUserNum.jsp"
 
+    # OA 公文池同步
+    oa_sync_on_login: bool = False
+    oa_sync_max_pages: int = 3
+    oa_sync_page_size: int = 20
+    oa_sync_modules: str = "todo,unread,done,read_done,running"
+    oa_list_path: str = "/hmoa/s"
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
@@ -67,6 +74,11 @@ class Settings(BaseSettings):
     @property
     def oa_enabled(self) -> bool:
         return self.auth_mode_normalized in {"oa", "mixed"}
+
+    @property
+    def oa_sync_module_list(self) -> list[str]:
+        parts = [p.strip() for p in (self.oa_sync_modules or "").split(",")]
+        return [p for p in parts if p]
 
 
 @lru_cache

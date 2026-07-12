@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OA 公文池 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const root = renderShell("oa", "OA 公文池");
+
+    const MODULES = [
+      { code: "todo", name: "待办公文" },
+      { code: "unread", name: "待阅公文" },
+      { code: "done", name: "已办公文" },
+      { code: "read_done", name: "已阅公文" },
+      { code: "running", name: "流转中公文" },
+    ];
+
+    let activeModule = "todo";
+    let stats = [];
+
+    function lastSyncText() {
+      const s = stats.find((x) => x.module_code === activeModule);
+      if (!s || !s.last_synced_at) return "尚未同步";
+      return fmtTime(s.last_synced_at);
+    }
+
+    function totalFor(code) {
+      const s = stats.find((x) => x.module_code === code);
+      return s ? s.count : 0;
+    }
+
+    async function loadStats() {
+      try {
+        stats = await api("/api/oa/stats");
+      } catch {
+        stats = [];
+      }
+    }
+
+    async function openCollab(id) {
+      try {
+        const item = await api("/api/oa/items/" + id + "/create-collab", {
+          method: "POST",
+          body: "{}",
+        });
+        toast("已进入协同办理", "success");
+        location.href = "/item_detail.html?id=" + item.id;
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    }
+
+    async function doSync() {
+      const pwd = prompt(
+        "请输入 OA 密码以重新同步（系统不保存密码；也可在登录时开启 OA_SYNC_ON_LOGIN）"
+      );
+      if (pwd === null) return;
+      if (!pwd) {
+        toast("未输入密码", "error");
+        return;
+      }
+      try {
+        const me = getUser() || {};
+        const r = await api("/api/oa/sync", {
+          method: "POST",
+          body: JSON.stringify({
+            username: me.username,
+            password: pwd,
+          }),
+        });
+        if (!r.success) {
+          toast(r.message || "同步失败", "error");
+        } else {
+          toast(
+            `同步完成：新增 ${r.imported}，更新 ${r.updated}，合计 ${r.total}`,
+            "success"
+          );
+        }
+        await load();
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    }
+
+    async function loadList() {
+      const kw = (document.getElementById("kw") && document.getElementById("kw").value.trim()) || "";
+      let url = "/api/oa/items?module_code=" + encodeURIComponent(activeModule) + "&limit=200";
+      if (kw) url += "&keyword=" + encodeURIComponent(kw);
+      const list = await api(url);
+      const tb = document.getElementById("tbody");
+      if (!list.length) {
+        tb.innerHTML = `<tr><td colspan="10" class="empty-row">暂无数据。请使用「重新同步」或开启登录后自动同步。</td></tr>`;
+        return;
+      }
+      tb.innerHTML = list
+        .map(
+          (r) => `<tr>
+          <td title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
+          <td>${escapeHtml(r.doc_no || "—")}</td>
+          <td>${escapeHtml(r.source_unit || "—")}</td>
+          <td>${escapeHtml(r.flow_name || "—")}</td>
+          <td>${escapeHtml(r.step_name || "—")}</td>
+          <td>${fmtTime(r.received_at)}</td>
+          <td>${r.has_attach ? "是" : "否"}</td>
+          <td>${fmtTime(r.synced_at)}</td>
+          <td>${
+            r.linked_item_id
+              ? `<span class="badge badge-done">已创建 #${r.linked_item_id}</span>`
+              : `<span class="badge">未创建</span>`
+          }</td>
+          <td>
+            <button class="btn btn-sm btn-primary" type="button" data-open="${r.id}">
+              ${r.linked_item_id ? "打开事项" : "进入协同办理"}
+            </button>
+          </td>
+        </tr>`
+        )
+        .join("");
+      tb.querySelectorAll("[data-open]").forEach((btn) => {
+        btn.onclick = () => openCollab(btn.dataset.open);
+      });
+    }
+
+    async function load() {
+      root.innerHTML = `<p class="hint">加载中…</p>`;
+      try {
+        await loadStats();
+        root.innerHTML = `
+          <div class="toolbar">
+            <span class="hint">最近同步（当前模块）：<strong id="syncInfo">${escapeHtml(
+              lastSyncText()
+            )}</strong>
+            · 本模块记录 <strong>${totalFor(activeModule)}</strong> 条</span>
+            <div class="spacer"></div>
+            <input type="text" id="kw" placeholder="标题 / 文号 / 来源" style="width:200px" />
+            <button class="btn" type="button" id="btnSearch">查询</button>
+            <button class="btn btn-primary" type="button" id="btnSync">重新同步</button>
+          </div>
+          <div class="tabs" id="tabs">
+            ${MODULES.map(
+              (m) =>
+                `<button type="button" data-m="${m.code}" class="${
+                  m.code === activeModule ? "active" : ""
+                }">${escapeHtml(m.name)} (${totalFor(m.code)})</button>`
+            ).join("")}
+          </div>
+          <div class="panel">
+            <div class="panel-hd">公文列表 · ${escapeHtml(
+              (MODULES.find((m) => m.code === activeModule) || {}).name || ""
+            )}</div>
+            <div class="panel-bd table-wrap">
+              <table class="data">
+                <thead>
+                  <tr>
+                    <th>标题</th><th>文号</th><th>来源</th><th>流程</th><th>当前节点</th>
+                    <th>收文时间</th><th>附件</th><th>同步时间</th><th>状态</th><th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody"><tr><td colspan="10" class="empty-row">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <p class="hint">说明：第一版仅同步列表元数据，不下载附件/正文，不回写 OA。进入协同办理后在本系统完成审核流转。</p>
+        `;
+
+        document.getElementById("tabs").onclick = async (e) => {
+          const btn = e.target.closest("button[data-m]");
+          if (!btn) return;
+          activeModule = btn.dataset.m;
+          await load();
+        };
+        document.getElementById("btnSearch").onclick = () => loadList();
+        document.getElementById("kw").addEventListener("keydown", (e) => {
+          if (e.key === "Enter") loadList();
+        });
+        document.getElementById("btnSync").onclick = doSync;
+        await loadList();
+      } catch (e) {
+        root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

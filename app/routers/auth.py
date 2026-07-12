@@ -18,6 +18,7 @@ from app.models import User, UserRole
 from app.schemas import (
     AuthConfigOut,
     LoginRequest,
+    OASyncStatusOut,
     TokenResponse,
     UserCreate,
     UserOption,
@@ -28,15 +29,21 @@ from app.services.oa_auth import (
     OAAuthError,
     OAAuthUnavailable,
     OAUserProfile,
+    authenticate_and_fetch_oa,
     authenticate_oa_user,
 )
+from app.services.oa_sync import sync_oa_work_items
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 
-def _issue_token(user: User) -> TokenResponse:
+def _issue_token(user: User, oa_sync: OASyncStatusOut | None = None) -> TokenResponse:
     token = create_access_token(user.username, {"uid": user.id, "role": user.role.value})
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return TokenResponse(
+        access_token=token,
+        user=UserOut.model_validate(user),
+        oa_sync=oa_sync,
+    )
 
 
 def _resolve_default_oa_role() -> UserRole:
@@ -46,7 +53,6 @@ def _resolve_default_oa_role() -> UserRole:
         role = UserRole(raw)
     except ValueError:
         role = UserRole.viewer
-    # 禁止通过默认角色自动成为管理员
     if role == UserRole.admin:
         return UserRole.viewer
     return role
@@ -59,7 +65,6 @@ def upsert_oa_user(db: Session, profile: OAUserProfile) -> User:
     if user:
         if not user.is_active:
             raise HTTPException(status_code=403, detail="本地用户已禁用，请联系管理员")
-        # 仅刷新展示信息，绝不改 role / password_hash
         if profile.display_name:
             user.display_name = profile.display_name
         if profile.unit is not None:
@@ -68,7 +73,6 @@ def upsert_oa_user(db: Session, profile: OAUserProfile) -> User:
         db.refresh(user)
         return user
 
-    # 首次 OA 登录：创建本地影子账号，密码为随机哈希（不可用 OA 密码本地登录）
     random_secret = secrets.token_urlsafe(32)
     user = User(
         username=username,
@@ -91,14 +95,38 @@ def _login_local(db: Session, username: str, password: str) -> User:
     return user
 
 
-def _login_oa(db: Session, username: str, password: str) -> User:
+def _login_oa(db: Session, username: str, password: str) -> tuple[User, OASyncStatusOut]:
+    settings = get_settings()
     try:
+        if settings.oa_sync_on_login:
+            profile, items, fetch_err = authenticate_and_fetch_oa(
+                username,
+                password,
+                modules=settings.oa_sync_module_list,
+                max_pages=settings.oa_sync_max_pages,
+            )
+            user = upsert_oa_user(db, profile)
+            if fetch_err:
+                return user, OASyncStatusOut(
+                    enabled=True,
+                    success=False,
+                    error=fetch_err,
+                )
+            stats = sync_oa_work_items(db, user, profile.username, items)
+            return user, OASyncStatusOut(
+                enabled=True,
+                success=True,
+                total=stats["total"],
+                imported=stats["imported"],
+                updated=stats["updated"],
+            )
         profile = authenticate_oa_user(username, password)
+        user = upsert_oa_user(db, profile)
+        return user, OASyncStatusOut(enabled=False, success=True)
     except OAAuthError as exc:
         raise HTTPException(status_code=401, detail=exc.message) from exc
     except OAAuthUnavailable as exc:
         raise HTTPException(status_code=503, detail=exc.message) from exc
-    return upsert_oa_user(db, profile)
 
 
 @router.get("/config", response_model=AuthConfigOut)
@@ -108,6 +136,7 @@ def auth_config():
         auth_mode=settings.auth_mode_normalized,
         oa_enabled=settings.oa_enabled,
         title=settings.app_name,
+        oa_sync_on_login=bool(settings.oa_sync_on_login),
     )
 
 
@@ -122,18 +151,23 @@ def login(body: LoginRequest, db: Annotated[Session, Depends(get_db)]):
         return _issue_token(_login_local(db, username, password))
 
     if mode == "oa":
-        return _issue_token(_login_oa(db, username, password))
+        user, oa_sync = _login_oa(db, username, password)
+        return _issue_token(user, oa_sync)
 
     # mixed：优先 OA；仅当 OA 服务不可用（503）时允许本地 admin 维护登录
     try:
-        return _issue_token(_login_oa(db, username, password))
+        user, oa_sync = _login_oa(db, username, password)
+        return _issue_token(user, oa_sync)
     except HTTPException as exc:
-        # 401 认证失败 / 403 本地禁用 等：不回落
         if exc.status_code != 503:
             raise
         if username == settings.admin_username:
             try:
-                return _issue_token(_login_local(db, username, password))
+                # 本地 fallback 不触发 OA 同步
+                return _issue_token(
+                    _login_local(db, username, password),
+                    OASyncStatusOut(enabled=False, success=False, error="本地管理员回落登录"),
+                )
             except HTTPException:
                 raise HTTPException(
                     status_code=503,
@@ -152,7 +186,6 @@ def me(user: CurrentUser):
 
 @router.get("/user-options", response_model=list[UserOption])
 def user_options(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    """新建/分派事项选人：所有登录用户可取启用中的人员精简列表。"""
     return (
         db.query(User)
         .filter(User.is_active.is_(True))
@@ -163,7 +196,6 @@ def user_options(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
 
 @router.get("/users", response_model=list[UserOut])
 def list_users(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    """用户管理列表：管理员可见全部（含禁用）；办公室可见启用用户。"""
     if user.role == UserRole.admin:
         return db.query(User).order_by(User.id).all()
     if user.role == UserRole.office_clerk:

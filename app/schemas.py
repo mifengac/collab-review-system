@@ -19,16 +19,27 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class OASyncStatusOut(BaseModel):
+    enabled: bool = False
+    success: bool = False
+    total: int = 0
+    imported: int = 0
+    updated: int = 0
+    error: str | None = None
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: "UserOut"
+    oa_sync: OASyncStatusOut | None = None
 
 
 class AuthConfigOut(BaseModel):
     auth_mode: str
     oa_enabled: bool
     title: str
+    oa_sync_on_login: bool = False
 
 
 class UserOut(ORMModel):
@@ -214,7 +225,7 @@ class DashboardOut(BaseModel):
     stats: DashboardStats = DashboardStats()
 
 
-# ---------- OA 预留 ----------
+# ---------- OA 公文池 ----------
 class OAInboxItem(BaseModel):
     oa_flow_id: str
     oa_step_id: str | None = None
@@ -225,15 +236,54 @@ class OAInboxItem(BaseModel):
     received_at: datetime | None = None
 
 
+class OAWorkItemOut(ORMModel):
+    id: int
+    owner_user_id: int
+    oa_user_code: str
+    module_code: str
+    module_name: str
+    flowinid: str
+    stepinco: str | None = None
+    dealindx: str | None = None
+    title: str
+    doc_no: str | None = None
+    source_unit: str | None = None
+    flow_name: str | None = None
+    step_name: str | None = None
+    handler_name: str | None = None
+    received_at: datetime | None = None
+    open_date: datetime | None = None
+    has_attach: bool = False
+    read_flag: int | None = None
+    fini_flag: int | None = None
+    urgency: int | None = None
+    linked_item_id: int | None = None
+    synced_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class OASyncRequest(BaseModel):
     force: bool = False
+    username: str | None = None
+    password: str | None = None
+    modules: list[str] | None = None
 
 
 class OASyncResponse(BaseModel):
     success: bool
     message: str
     imported: int = 0
+    updated: int = 0
+    total: int = 0
     data: list[Any] = []
+
+
+class OAModuleStat(BaseModel):
+    module_code: str
+    module_name: str
+    count: int
+    last_synced_at: datetime | None = None
 
 
 # ---------- Office 预留 ----------

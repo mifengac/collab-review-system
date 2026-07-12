@@ -1,29 +1,71 @@
+# 材料协同办理系统 — 内网离线可运行
+# 使用前：
+#   1. docker load -i collab-review-system-1.0.0.tar
+#   2. cp .env.example .env   # 按内网实际修改
+#   3. docker compose up -d
+#
+# 说明：使用已导出镜像，不在内网执行 build，无需访问互联网。
+
 services:
   collab-review:
-    build: .
+    image: collab-review-system:1.0.0
     container_name: collab-review-system
     ports:
-      - "5009:5009"
-    # 读取项目根目录 .env（请先 cp .env.example .env）
+      - "${APP_PORT:-5009}:5009"
     env_file:
       - .env
     environment:
-      # 下列默认值作兜底；同名变量以 env_file / shell 环境优先
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/collab.db}
-      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      # 以下全部支持 .env 覆盖；值为容器内路径默认，适合离线命名卷
+      APP_NAME: ${APP_NAME:-材料协同办理系统}
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-5009}
       SECRET_KEY: ${SECRET_KEY:-please-change-this-to-a-random-secret-key}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      DEBUG: ${DEBUG:-false}
+
+      # 数据库（SQLite 容器内绝对路径；可改为内网 PostgreSQL/Kingbase）
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/collab.db}
+
+      # 管理员（仅首次初始化数据库时创建）
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin@123456}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-系统管理员}
+
+      # 演示账号（生产/内网务必 false）
       SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}
+
+      # 上传目录（容器内）
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+
+      # 认证：local | oa | mixed
       AUTH_MODE: ${AUTH_MODE:-local}
+
+      # OA（内网地址；local 模式可留空）
       OA_BASE_URL: ${OA_BASE_URL:-}
+      OA_LOGIN_PATH: ${OA_LOGIN_PATH:-/hportal/j_security_check}
+      OA_PROFILE_PATH: ${OA_PROFILE_PATH:-/hportal/view/GetModuleTree.do}
+      OA_LOGIN_TIMEOUT_SECONDS: ${OA_LOGIN_TIMEOUT_SECONDS:-8}
       OA_DEFAULT_ROLE: ${OA_DEFAULT_ROLE:-viewer}
-      APP_PORT: "5009"
+      OA_VERIFY_TLS: ${OA_VERIFY_TLS:-false}
+      OA_PRECHECK_ENABLED: ${OA_PRECHECK_ENABLED:-false}
+      OA_PKI_PATH: ${OA_PKI_PATH:-/hportal/Login/checkUserPKI.jsp}
+      OA_USER_NUM_PATH: ${OA_USER_NUM_PATH:-/hitem/api/getUserNum.jsp}
+      OA_SYNC_ON_LOGIN: ${OA_SYNC_ON_LOGIN:-false}
+      OA_SYNC_MAX_PAGES: ${OA_SYNC_MAX_PAGES:-3}
+      OA_SYNC_PAGE_SIZE: ${OA_SYNC_PAGE_SIZE:-20}
+      OA_SYNC_MODULES: ${OA_SYNC_MODULES:-todo,unread,done,read_done,running}
+      OA_LIST_PATH: ${OA_LIST_PATH:-/hmoa/s}
     volumes:
+      # 数据与上传持久化（也可改为绑定挂载，见 .env.example 注释）
       - collab_data:/app/data
       - collab_uploads:/app/uploads
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5009/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   collab_data:

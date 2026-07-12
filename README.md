@@ -108,6 +108,34 @@ OA_PRECHECK_ENABLED=false
 - 首次启用 OA 建议使用 **`mixed`**，确保管理员在 OA 故障时仍能进系统改角色。  
 - `GET /api/auth/config` 可返回当前 `auth_mode` / `oa_enabled` 供登录页展示。
 
+### OA 公文池同步
+
+用户 **OA 登录成功** 后（可选），在同一会话内拉取五个公文模块列表，写入本系统 `oa_work_items` 表（OA 公文池）。**不会**自动为每条公文创建协同事项。
+
+| module_code | 名称 | OA service（可配置） |
+|-------------|------|----------------------|
+| `todo` | 待办公文 | `flowDealingList` |
+| `unread` | 待阅公文 | `flowUnreadList` |
+| `done` | 已办公文 | `flowDealingList` + taskType=1 |
+| `read_done` | 已阅公文 | `flowUnreadList` + taskType/readFlag |
+| `running` | 流转中公文 | `flowDealingList` + taskType=-1 |
+
+配置：
+
+```env
+OA_SYNC_ON_LOGIN=false          # 内网启用 OA 后建议 true
+OA_SYNC_MAX_PAGES=3
+OA_SYNC_PAGE_SIZE=20
+OA_SYNC_MODULES=todo,unread,done,read_done,running
+OA_LIST_PATH=/hmoa/s
+```
+
+- 仅 **本次走 OA 登录** 时自动同步；`local` 登录或 mixed 下 admin 本地回落 **不**同步。  
+- 列表同步失败 **不影响登录**。  
+- 不保存 OA 密码/cookie；手动「重新同步」需本次输入密码。  
+- 前端：**OA 公文池**（`/oa_items.html`）→「进入协同办理」→ 创建/打开事项。  
+- **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。
+
 ## 角色与权限
 
 | 角色 | 查看范围 | 新建/编辑/上传 | 分派 | 审批 | 督办 | 用户管理 |
@@ -315,8 +343,11 @@ DATABASE_URL=postgresql://user:password@host:54321/collab_review
 | GET | `/api/versions/{id}/download` | 下载指定版本 |
 | GET | `/api/dict/departments` | 大队字典 |
 | GET | `/api/dict/tags` | 业务标签 |
-| GET | `/api/oa/inbox` | OA 收件箱（预留） |
-| POST | `/api/oa/sync` | OA 同步（预留） |
+| GET | `/api/oa/items` | OA 公文池列表 |
+| GET | `/api/oa/stats` | 各模块数量 |
+| GET | `/api/oa/inbox` | 待办摘要（兼容） |
+| POST | `/api/oa/sync` | 手动同步（需本次 OA 密码） |
+| POST | `/api/oa/items/{id}/create-collab` | 从公文创建/打开事项 |
 | GET | `/api/health` | 健康检查 |
 
 ## License

@@ -49,6 +49,13 @@ def _safe_json(resp: httpx.Response) -> dict[str, Any]:
     ctype = (resp.headers.get("content-type") or "").lower()
     text = resp.text or ""
     if "html" in ctype or text.lstrip().lower().startswith("<!doctype") or text.lstrip().startswith("<html"):
+        # 尝试当 JSON 解析
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
         raise OAAuthError("OA 未返回有效用户信息，可能登录失败")
     try:
         data = resp.json()
@@ -62,7 +69,6 @@ def _safe_json(resp: httpx.Response) -> dict[str, Any]:
 def _parse_profile(data: dict[str, Any], fallback_username: str) -> OAUserProfile:
     user_info = data.get("userInfo")
     if not isinstance(user_info, dict) or not user_info:
-        # 部分失败响应可能带 success=false
         if data.get("success") is False:
             raise OAAuthError("OA 登录失败")
         raise OAAuthError("OA 未返回用户信息")
@@ -77,7 +83,6 @@ def _parse_profile(data: dict[str, Any], fallback_username: str) -> OAUserProfil
     else:
         unit = None
 
-    # 仅保留必要字段副本，避免把整棵模块树塞进内存日志
     slim = {
         "userCode": user_info.get("userCode"),
         "userName": user_info.get("userName"),
@@ -96,7 +101,6 @@ def _parse_profile(data: dict[str, Any], fallback_username: str) -> OAUserProfil
 
 
 def _optional_precheck(client: httpx.Client, base: str, username: str) -> None:
-    """可选：部分 OA 环境登录前需探测用户编号（不校验密码）。"""
     settings = get_settings()
     if not settings.oa_precheck_enabled:
         return
@@ -106,16 +110,20 @@ def _optional_precheck(client: httpx.Client, base: str, username: str) -> None:
         num = _join_url(base, settings.oa_user_num_path)
         client.post(num, params={"userNum": username})
     except httpx.RequestError:
-        # 预检失败不阻断，真正成败以 j_security_check + profile 为准
         logger.info("OA precheck skipped due to network error")
 
 
-def authenticate_oa_user(username: str, password: str) -> OAUserProfile:
-    """
-    使用 OA 账号密码验证身份并拉取用户信息。
-    - 不落库 cookie / token / 密码
-    - 不向日志输出密码或 Cookie
-    """
+def _open_oa_client() -> httpx.Client:
+    settings = get_settings()
+    timeout = httpx.Timeout(settings.oa_login_timeout_seconds)
+    return httpx.Client(
+        timeout=timeout,
+        verify=settings.oa_verify_tls,
+        follow_redirects=True,
+    )
+
+
+def _login_and_profile(client: httpx.Client, username: str, password: str) -> OAUserProfile:
     settings = get_settings()
     base = (settings.oa_base_url or "").strip()
     if not base:
@@ -125,50 +133,46 @@ def authenticate_oa_user(username: str, password: str) -> OAUserProfile:
     if not username or not password:
         raise OAAuthError("请输入 OA 账号和密码")
 
-    timeout = httpx.Timeout(settings.oa_login_timeout_seconds)
     login_url = _join_url(base, settings.oa_login_path)
     profile_url = _join_url(base, settings.oa_profile_path)
 
+    _optional_precheck(client, base, username)
+
+    login_resp = client.post(
+        login_url,
+        data={
+            "j_username": username,
+            "j_password": password,
+            "remember": "on",
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    logger.info("OA login request finished status=%s", login_resp.status_code)
+
+    if login_resp.status_code >= 500:
+        raise OAAuthUnavailable("OA 登录服务异常")
+    if not client.cookies:
+        logger.info("OA login produced no cookies")
+
+    profile_resp = client.post(profile_url)
+    logger.info("OA profile request finished status=%s", profile_resp.status_code)
+
+    if profile_resp.status_code >= 500:
+        raise OAAuthUnavailable("OA 用户信息接口异常")
+    if profile_resp.status_code in (401, 403):
+        raise OAAuthError("OA 登录失败")
+    if profile_resp.status_code >= 400:
+        raise OAAuthError("OA 登录失败或无权访问")
+
+    data = _safe_json(profile_resp)
+    return _parse_profile(data, fallback_username=username)
+
+
+def authenticate_oa_user(username: str, password: str) -> OAUserProfile:
+    """仅验证 OA 身份，会话结束后销毁 cookie。"""
     try:
-        with httpx.Client(
-            timeout=timeout,
-            verify=settings.oa_verify_tls,
-            follow_redirects=True,
-        ) as client:
-            _optional_precheck(client, base, username)
-
-            login_resp = client.post(
-                login_url,
-                data={
-                    "j_username": username,
-                    "j_password": password,
-                    "remember": "on",
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            # 不记录 body / cookie；仅记状态码
-            logger.info("OA login request finished status=%s", login_resp.status_code)
-
-            if login_resp.status_code >= 500:
-                raise OAAuthUnavailable("OA 登录服务异常")
-
-            # 登录后通常应有会话 cookie；无 cookie 且后续 profile 失败则视为失败
-            if not client.cookies:
-                logger.info("OA login produced no cookies")
-
-            profile_resp = client.post(profile_url)
-            logger.info("OA profile request finished status=%s", profile_resp.status_code)
-
-            if profile_resp.status_code >= 500:
-                raise OAAuthUnavailable("OA 用户信息接口异常")
-            if profile_resp.status_code in (401, 403):
-                raise OAAuthError("OA 登录失败")
-            if profile_resp.status_code >= 400:
-                raise OAAuthError("OA 登录失败或无权访问")
-
-            data = _safe_json(profile_resp)
-            return _parse_profile(data, fallback_username=username)
-
+        with _open_oa_client() as client:
+            return _login_and_profile(client, username, password)
     except (OAAuthError, OAAuthUnavailable):
         raise
     except httpx.TimeoutException as exc:
@@ -176,6 +180,43 @@ def authenticate_oa_user(username: str, password: str) -> OAUserProfile:
     except httpx.RequestError as exc:
         raise OAAuthUnavailable("无法连接 OA 服务") from exc
     except Exception as exc:
-        # 兜底：不暴露内部细节与敏感信息
         logger.exception("OA auth unexpected error: %s", type(exc).__name__)
+        raise OAAuthUnavailable("OA 认证过程发生异常") from exc
+
+
+def authenticate_and_fetch_oa(
+    username: str,
+    password: str,
+    modules: list[str] | None = None,
+    max_pages: int | None = None,
+) -> tuple[OAUserProfile, list, str | None]:
+    """
+    同一会话内登录并拉取公文列表。
+    返回 (profile, fetched_items, fetch_error)。
+    列表失败不影响认证成功；cookie 仅在 with 块内存在。
+    """
+    from app.services.oa_client import fetch_oa_work_items
+
+    try:
+        with _open_oa_client() as client:
+            profile = _login_and_profile(client, username, password)
+            try:
+                items = fetch_oa_work_items(client, modules=modules, max_pages=max_pages)
+                return profile, items, None
+            except Exception as exc:
+                # 不同步失败不抛出登录失败
+                msg = getattr(exc, "message", None) or str(exc) or "OA 列表同步失败"
+                # 不带出可能的敏感细节
+                if len(msg) > 200:
+                    msg = msg[:200]
+                logger.info("OA fetch after login failed: %s", type(exc).__name__)
+                return profile, [], msg
+    except (OAAuthError, OAAuthUnavailable):
+        raise
+    except httpx.TimeoutException as exc:
+        raise OAAuthUnavailable("OA 登录超时") from exc
+    except httpx.RequestError as exc:
+        raise OAAuthUnavailable("无法连接 OA 服务") from exc
+    except Exception as exc:
+        logger.exception("OA auth+fetch unexpected error: %s", type(exc).__name__)
         raise OAAuthUnavailable("OA 认证过程发生异常") from exc

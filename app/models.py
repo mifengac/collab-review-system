@@ -216,3 +216,56 @@ class ActionLog(Base):
 
     item = relationship("Item", back_populates="logs")
     actor = relationship("User", back_populates="logs")
+
+
+class OAWorkItem(Base):
+    """OA 公文池：同步自 OA 列表，用户点击后再创建协同事项。"""
+
+    __tablename__ = "oa_work_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "module_code",
+            "flowinid",
+            "stepinco",
+            "dealindx",
+            name="uq_oa_work_item_owner_module_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    oa_user_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    module_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    module_name: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    flowinid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stepinco: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dealindx: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_key: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    doc_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_unit: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    flow_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    step_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    handler_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    open_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    has_attach: Mapped[bool] = mapped_column(Boolean, default=False)
+    read_flag: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fini_flag: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    urgency: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linked_item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    owner = relationship("User", foreign_keys=[owner_user_id])
+    linked_item = relationship("Item", foreign_keys=[linked_item_id])

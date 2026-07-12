@@ -36,10 +36,19 @@
       try {
         const data = await api("/api/items/dashboard");
         const st = data.stats || {};
+        let oaTodo = 0;
+        let oaUnread = 0;
+        try {
+          const oaStats = await api("/api/oa/stats");
+          oaTodo = (oaStats.find((x) => x.module_code === "todo") || {}).count || 0;
+          oaUnread = (oaStats.find((x) => x.module_code === "unread") || {}).count || 0;
+        } catch (_) {}
         root.innerHTML = `
           <div class="toolbar">
             <a class="btn btn-primary" href="/item_form.html">＋ 新建事项</a>
+            <a class="btn" href="/oa_items.html">OA 公文池</a>
             <a class="btn" href="/items.html">全部事项</a>
+            <span class="hint" style="margin-left:8px">OA 待办 ${oaTodo} · 待阅 ${oaUnread}</span>
           </div>
           <div class="grid-3" style="grid-template-columns:repeat(4,1fr)">
             <div class="stat-card">

@@ -189,7 +189,8 @@ def test_full_workflow(client: TestClient):
 
     r = client.post("/api/oa/sync", headers=h, json={"force": False})
     assert r.status_code == 200
-    assert r.json()["success"] is True
+    # 未带 OA 密码时返回提示（不保存密码，需登录后自动同步或手动填密）
+    assert "message" in r.json()
 
     r = client.get("/api/items/dashboard", headers=h)
     assert r.status_code == 200

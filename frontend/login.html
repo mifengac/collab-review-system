@@ -82,7 +82,12 @@
           body: JSON.stringify({ username, password }),
         });
         setAuth(data.access_token, data.user);
-        location.href = "/index.html";
+        // OA/mixed 且启用登录同步时，进入公文池
+        const goOa =
+          (authMode === "oa" || authMode === "mixed") &&
+          data.oa_sync &&
+          data.oa_sync.enabled;
+        location.href = goOa ? "/oa_items.html" : "/index.html";
       } catch (ex) {
         err.textContent = ex.message || "登录失败";
         err.style.display = "block";
