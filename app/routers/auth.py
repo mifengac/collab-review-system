@@ -218,6 +218,7 @@ def auth_config():
         oa_enabled=settings.oa_enabled,
         title=settings.app_name,
         oa_sync_on_login=bool(settings.oa_sync_on_login),
+        oa_mock_enabled=bool(settings.oa_mock_banner_enabled),
     )
 
 

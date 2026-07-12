@@ -52,9 +52,11 @@ services:
       OA_USER_NUM_PATH: ${OA_USER_NUM_PATH:-/hitem/api/getUserNum.jsp}
       OA_SYNC_ON_LOGIN: ${OA_SYNC_ON_LOGIN:-false}
       OA_SYNC_MAX_PAGES: ${OA_SYNC_MAX_PAGES:-3}
-      OA_SYNC_PAGE_SIZE: ${OA_SYNC_PAGE_SIZE:-20}
+      OA_SYNC_PAGE_SIZE: ${OA_SYNC_PAGE_SIZE:-10}
       OA_SYNC_MODULES: ${OA_SYNC_MODULES:-todo,unread,done,read_done,running}
       OA_LIST_PATH: ${OA_LIST_PATH:-/hmoa/s}
+      # 正式环境禁止模拟 OA
+      OA_MOCK_ENABLED: ${OA_MOCK_ENABLED:-false}
     volumes:
       # 数据与上传持久化（也可改为绑定挂载，见 .env.example 注释）
       - collab_data:/app/data

@@ -548,11 +548,18 @@ def _fetch_one_module(
 
 
 def _compute_report_status(module_results: list[OAModuleFetchResult]) -> str:
+    """
+    总体状态：
+    - 全部模块成功且无 truncated → success
+    - 全部模块失败 → failed
+    - 存在失败模块，或无失败但存在 truncated → partial
+    """
     if not module_results:
         return "failed"
     ok = sum(1 for m in module_results if m.success)
     fail = sum(1 for m in module_results if not m.success)
-    if fail == 0:
+    truncated = any(m.success and m.truncated for m in module_results)
+    if fail == 0 and not truncated:
         return "success"
     if ok == 0:
         return "failed"
@@ -569,7 +576,7 @@ def fetch_oa_work_items_report(
     mods = modules or settings.oa_sync_module_list or list(OA_WORK_MODULES.keys())
     pages = max_pages if max_pages is not None else settings.oa_sync_max_pages
     pages = max(1, min(int(pages), 20))
-    page_size = max(1, int(settings.oa_sync_page_size or 20))
+    page_size = max(1, int(settings.oa_sync_page_size or 10))
 
     all_items: list[OAFetchedItem] = []
     results: list[OAModuleFetchResult] = []
@@ -596,10 +603,18 @@ def fetch_oa_work_items_report(
         summary = "；".join(errors[:3]) if errors else "全部模块同步失败"
     elif status == "partial":
         failed_names = [m.module_name for m in results if not m.success]
-        summary = "部分模块同步失败：" + "、".join(failed_names)
-    truncated_names = [m.module_name for m in results if m.success and m.truncated]
-    if truncated_names:
-        extra = "分页未拉完（未清理旧记录）：" + "、".join(truncated_names)
+        if failed_names:
+            summary = "部分模块同步失败：" + "、".join(failed_names)
+    truncated_mods = [m for m in results if m.success and m.truncated]
+    if truncated_mods:
+        # 前端友好文案：已同步前 N 页，列表尚未全部拉完，未清理旧记录
+        parts = []
+        for m in truncated_mods:
+            n = m.pages or settings.oa_sync_max_pages
+            parts.append(
+                f"{m.module_name}：已同步前 {n} 页，列表尚未全部拉完，未清理旧记录"
+            )
+        extra = "；".join(parts)
         summary = f"{summary}；{extra}" if summary else extra
 
     return OAFetchReport(

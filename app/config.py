@@ -49,12 +49,15 @@ class Settings(BaseSettings):
     oa_pki_path: str = "/hportal/Login/checkUserPKI.jsp"
     oa_user_num_path: str = "/hitem/api/getUserNum.jsp"
 
-    # OA 公文池同步
+    # OA 公文池同步（OA 列表每页通常 10 条，与 oa.har 一致）
     oa_sync_on_login: bool = False
     oa_sync_max_pages: int = 3
-    oa_sync_page_size: int = 20
+    oa_sync_page_size: int = 10
     oa_sync_modules: str = "todo,unread,done,read_done,running"
     oa_list_path: str = "/hmoa/s"
+
+    # 模拟 OA（仅开发预览；DEBUG=false 时禁止启用）
+    oa_mock_enabled: bool = False
 
     @property
     def is_sqlite(self) -> bool:
@@ -79,6 +82,11 @@ class Settings(BaseSettings):
     def oa_sync_module_list(self) -> list[str]:
         parts = [p.strip() for p in (self.oa_sync_modules or "").split(",")]
         return [p for p in parts if p]
+
+    @property
+    def oa_mock_banner_enabled(self) -> bool:
+        """仅 DEBUG=true 且 OA_MOCK_ENABLED=true 时显示模拟环境标识。"""
+        return bool(self.debug) and bool(self.oa_mock_enabled)
 
 
 @lru_cache

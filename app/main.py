@@ -16,6 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 DATA_DIR = BASE_DIR / "data"
 
+# 生产安全：模拟 OA 标识仅允许 DEBUG 环境
+if settings.oa_mock_enabled and not settings.debug:
+    raise RuntimeError(
+        "配置错误：OA_MOCK_ENABLED=true 时必须同时设置 DEBUG=true。"
+        "正式环境请关闭 OA_MOCK_ENABLED。"
+    )
+
 app = FastAPI(
     title=settings.app_name,
     description="公安内网材料协同审核系统 MVP",
@@ -25,6 +32,12 @@ app = FastAPI(
 
 @app.on_event("startup")
 def on_startup() -> None:
+    # 再次校验（防止测试中动态改配置后仍误启动）
+    s = get_settings()
+    if s.oa_mock_enabled and not s.debug:
+        raise RuntimeError(
+            "配置错误：OA_MOCK_ENABLED=true 时必须同时设置 DEBUG=true"
+        )
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ensure_upload_dir()
     init_db()

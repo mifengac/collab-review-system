@@ -124,22 +124,62 @@ OA_PRECHECK_ENABLED=false
 
 ```env
 OA_SYNC_ON_LOGIN=false          # 内网启用 OA 后建议 true
-OA_SYNC_MAX_PAGES=3
-OA_SYNC_PAGE_SIZE=20
+OA_SYNC_MAX_PAGES=3             # 登录时最多拉前 N 页，勿一次拉全量历史
+OA_SYNC_PAGE_SIZE=10            # 与真实 OA 列表每页 10 条一致
 OA_SYNC_MODULES=todo,unread,done,read_done,running
 OA_LIST_PATH=/hmoa/s
+OA_MOCK_ENABLED=false           # 正式环境务必 false；仅开发预览可 true（且须 DEBUG=true）
 ```
 
 - 仅 **本次走 OA 登录** 时自动同步；`local` 登录或 mixed 下 admin 本地回落 **不**同步。  
 - 列表同步失败 **不影响登录**。  
 - 不保存 OA 密码/cookie；手动「重新同步」需本次输入密码。  
 - 前端：**OA 公文池**（`/oa_items.html`）→「进入协同办理」→ 创建/打开事项。  
-- **模块级诊断**：每个模块独立统计成功/失败；部分失败时状态为 `partial`，成功数据仍入库；记录见 `oa_sync_logs` 与 `GET /api/oa/sync-logs`。  
-- **当前有效列表 `is_active`**：仅完整同步成功的模块会将本轮未出现的旧记录标为 inactive（不物理删除，保留 `linked_item_id`）。失败或分页未拉完（`truncated`）**不清理**旧数据。  
-- **旧库兼容**：启动时自动为 `oa_work_items` 补齐 `is_active` 列，无需删除 `collab.db`。  
+- **模块级诊断**：每个模块独立统计成功/失败；部分失败或分页截断时状态为 `partial`，成功数据仍入库；记录见 `oa_sync_logs` 与 `GET /api/oa/sync-logs`。  
+- **当前有效列表 `is_active`**：仅完整同步成功的模块会将本轮未出现的旧记录标为 inactive（不物理删除，保留 `linked_item_id`）。失败或分页未拉完（`truncated`）**不清理**旧数据；前端提示「已同步前 N 页，列表尚未全部拉完，未清理旧记录。」  
+- **旧库兼容**：启动时 `migrate_schema` 为 `oa_work_items` 幂等补齐 `is_active` 与查询索引；升级失败则**拒绝启动**（不删库）。  
 - **敏感信息**：列表 raw 白名单 + 递归清洗；错误与日志不含密码/Cookie/Token/原始响应。  
 - **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。  
 - 交接文档唯一入口：`DEVELOPMENT_HANDOFF.md`。
+
+### 开发预览：模拟 OA（与正式 5009 隔离）
+
+无真实 OA 时，可用 Docker 预览栈验证公文池与分页截断：
+
+| 项目 | 正式环境 | 预览环境 |
+|------|----------|----------|
+| Compose | `docker-compose.yml` | `docker-compose.preview.yml` |
+| 主容器 | `collab-review-system` | `collab-review-preview` |
+| 模拟 OA | 无 | `collab-review-mock-oa`（仅 Docker 内网，不暴露办公网端口） |
+| 宿主机端口 | **5009** | **5010** |
+| 数据卷 | `collab_data` / `collab_uploads` | `collab_preview_data` / `collab_preview_uploads` |
+| 配置 | 读取 `.env` | **不读**正式 `.env`，脚本内置预览变量 |
+| `AUTH_MODE` | 按 `.env` | `oa` + `OA_SYNC_ON_LOGIN=true` |
+| `OA_MOCK_ENABLED` | 默认 `false` | `true`（且 `DEBUG=true`） |
+
+```bash
+# 构建最新镜像并启动预览（主应用 + 模拟 OA）
+bash scripts/preview-up.sh
+
+# 浏览器
+# http://127.0.0.1:5010/login.html
+
+# 停止预览（默认保留预览数据卷；绝不影响 5009 正式容器）
+bash scripts/preview-down.sh
+# 同时删除预览数据卷：
+bash scripts/preview-down.sh --purge
+```
+
+模拟登录账号（公开演示密码，与 `SEED_DEMO_USERS` 一致）：
+
+- `handler1` / `leader_a` / `leader_b` / `office1` / `supervisor1` → `Demo@123456`
+- `admin` → `Admin@123456`
+
+登录页与 OA 公文池顶部显示标识：**当前为模拟 OA 数据，仅用于开发测试。**（非弹窗）
+
+模拟数据条数（纯虚构）：待办 23 / 待阅 12 / 已办 18 / 已阅 7 / 流转中 35。`max_pages=3` 时流转中会 `truncated`，总体状态 `partial`。
+
+**禁止**：将 `oa.har`、真实 OA 账号/Cookie/Token、内网 IP 提交仓库；模拟服务日志不打印密码与 Cookie。
 
 ## 角色与权限
 

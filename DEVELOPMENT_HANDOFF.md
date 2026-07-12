@@ -58,7 +58,7 @@
 - OA 公文池同步
 - 从 OA 公文池创建协同事项
 
-当前基线：以 `main` 最新为准（本轮：OA 过期记录清理 + 事务回滚 + 敏感信息清洗）。
+当前基线：以 `main` 最新为准（本轮：旧库 migrate 失败硬停 + 模拟 OA Docker 预览 + 分页默认 10 / truncated→partial）。
 
 近期相关提交：
 
@@ -301,9 +301,11 @@ HAR 中观察到的列表入口：
 - **仅模块完整同步成功**（`success && complete && !truncated`）才停用本轮未出现的旧记录。
 - 失败/截断模块：**不停用**旧数据。
 - 已关联 `linked_item_id` 的记录只改 inactive，**不删事项**。
-- 启动时 `migrate_schema()` 幂等补齐旧库 `is_active`（无需删 collab.db）。
+- 启动时 `migrate_schema(bind=engine)` 幂等补齐旧库 `is_active` + 常用查询索引（无需删 collab.db）。
+- **is_active 升级失败**：日志仅中文说明 + 异常类型；ALTER 后复查；仍无字段则 `RuntimeError`，**容器启动失败**（禁止带坏结构继续跑）。
 - 手动同步入库异常：**先 rollback** 再写 failed 日志。
 - `sanitize_raw` 业务白名单 + 递归去敏感键；未知异常用通用中文；OA 路径不用 `logger.exception`。
+- 真实旧库升级测试：`tests/test_migrate_schema.py`（临时 SQLite 建无 is_active 表 → 迁移 → 数据保留 → 失败硬停）。
 
 ### 7.2 模块 complete / truncated
 
@@ -312,8 +314,27 @@ HAR 中观察到的列表入口：
 - 无 totalCount：本页 raw_count < page_size → complete
 - 达 max pages 未确认末页 → truncated=true, complete=false，**不清理**
 - 任意页失败 → success=false, complete=false，**不清理**
+- **总体状态**：存在 truncated 且无失败模块时仍为 **partial**（不可标 success）
+- 默认 `OA_SYNC_PAGE_SIZE=10`（与 OA 每页 10 条一致）；`OA_SYNC_MAX_PAGES=3` 限制登录同步量
 
-### 7.3 真实 OA 联调检查表（待内网验证）
+### 7.3 模拟 OA 预览环境（本轮已实现）
+
+| 项 | 说明 |
+|----|------|
+| 模拟服务 | `app/mock_oa.py`（独立 uvicorn，**不挂主应用路由**） |
+| Compose | `docker-compose.preview.yml`（不读正式 `.env`） |
+| 启动/停止 | `bash scripts/preview-up.sh` / `bash scripts/preview-down.sh`（`--purge` 才删预览卷） |
+| 主容器 | `collab-review-preview`，宿主机 **5010** |
+| 模拟 OA 容器 | `collab-review-mock-oa`，**仅内部网络**，不映射办公网端口 |
+| 正式服务 | 仍为 `collab-review-system` **5009**，预览脚本不得停止正式容器 |
+| 镜像 | `collab-review-system:preview`（preview-up 每次重新 build） |
+| 配置 | `DEBUG=true` `SEED_DEMO_USERS=true` `AUTH_MODE=oa` `OA_SYNC_ON_LOGIN=true` `OA_MOCK_ENABLED=true` `OA_BASE_URL=http://mock-oa:5099` |
+| 条数 | todo23 / unread12 / done18 / read_done7 / running35 |
+| 安全 | `OA_MOCK_ENABLED` 默认 false；`DEBUG=false` 且 mock=true 时拒绝启动；页面非弹窗标识 |
+
+演示账号：`handler1` 等公开演示密码（见 README），**不得**使用真实 OA 密码。数据全部虚构，**禁止**提交 `oa.har`。
+
+### 7.4 真实 OA 联调检查表（待内网验证）
 
 > 本机未连接真实 OA，**不得声称已完成真实联调**。
 
@@ -327,21 +348,23 @@ HAR 中观察到的列表入口：
 8. 严禁提交：真实 OA 账号密码、Cookie、Token、完整响应、HAR。
 9. 调整 `OA_WORK_MODULES` 须以**内网最新 HAR** 为依据并补 mock 测试。
 
-### 7.4 继续开发优先文件
+### 7.5 继续开发优先文件
 
 - `app/services/oa_client.py` / `oa_sync.py` / `oa_auth.py`
 - `app/database.py`（`migrate_schema`）
+- `app/mock_oa.py` / `docker-compose.preview.yml` / `scripts/preview-*.sh`
 - `app/routers/oa.py` / `auth.py`
-- `frontend/oa_items.html`
-- `tests/test_oa_sync.py`
+- `frontend/oa_items.html` / `login.html`
+- `tests/test_oa_sync.py` / `test_migrate_schema.py` / `test_mock_oa.py`
 
 ## 8. 后续路线建议
 
 短期优先：
 
-1. 按 7.3 检查表完成内网真实 OA 联调。
+1. 按 7.4 检查表完成内网真实 OA 联调（预览栈已可本地验证五类公文与 truncated）。
 2. 若某类公文不同步，抓 HAR 对比 `/hmoa/s` 参数后有依据地改 `OA_WORK_MODULES`。
 3. 梳理本地账号与 OA `userCode` 是否一致；不一致则做管理员映射表，禁止任意 username。
+4. 后台增量同步（不要在登录时一次拉上万条历史）。
 
 中期建议：
 

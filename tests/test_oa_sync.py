@@ -1135,8 +1135,7 @@ def test_manual_sync_rollback_on_failure(client: TestClient):
 
 
 def test_migrate_adds_is_active_column(client: TestClient):
-    """旧库缺 is_active 时 migrate_schema 可幂等补齐。"""
-    # 用当前引擎：字段应已存在；验证重复调用不报错
+    """当前库已有 is_active 时 migrate_schema 幂等；真实旧库见 test_migrate_schema.py。"""
     migrate_schema()
     migrate_schema()
     insp = inspect(engine)

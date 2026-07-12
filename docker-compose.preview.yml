@@ -1,0 +1,83 @@
+# 材料协同办理系统 — 开发预览环境（模拟 OA）
+# 与正式 docker-compose.yml / 5009 服务完全隔离
+# 不读取正式 .env；使用独立数据卷与内部网络
+#
+# 推荐：bash scripts/preview-up.sh
+# 停止：bash scripts/preview-down.sh
+# 清除预览数据：bash scripts/preview-down.sh --purge
+
+services:
+  mock-oa:
+    image: collab-review-system:preview
+    container_name: collab-review-mock-oa
+    command: ["uvicorn", "app.mock_oa:app", "--host", "0.0.0.0", "--port", "5099"]
+    # 不向宿主机/办公网暴露端口，仅 Docker 内部访问
+    expose:
+      - "5099"
+    networks:
+      - collab-preview-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5099/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  collab-preview:
+    image: collab-review-system:preview
+    container_name: collab-review-preview
+    ports:
+      - "5010:5009"
+    environment:
+      APP_NAME: "材料协同办理系统（预览）"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "5009"
+      SECRET_KEY: "preview-only-not-for-production"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "480"
+      DEBUG: "true"
+      DATABASE_URL: "sqlite:////app/data/collab.db"
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "Admin@123456"
+      ADMIN_DISPLAY_NAME: "系统管理员"
+      SEED_DEMO_USERS: "true"
+      UPLOAD_DIR: "/app/uploads"
+      AUTH_MODE: "oa"
+      OA_BASE_URL: "http://mock-oa:5099"
+      OA_LOGIN_PATH: "/hportal/j_security_check"
+      OA_PROFILE_PATH: "/hportal/view/GetModuleTree.do"
+      OA_LOGIN_TIMEOUT_SECONDS: "8"
+      OA_DEFAULT_ROLE: "handler"
+      OA_VERIFY_TLS: "false"
+      OA_PRECHECK_ENABLED: "false"
+      OA_SYNC_ON_LOGIN: "true"
+      OA_SYNC_MAX_PAGES: "3"
+      OA_SYNC_PAGE_SIZE: "10"
+      OA_SYNC_MODULES: "todo,unread,done,read_done,running"
+      OA_LIST_PATH: "/hmoa/s"
+      OA_MOCK_ENABLED: "true"
+    volumes:
+      - collab_preview_data:/app/data
+      - collab_preview_uploads:/app/uploads
+    depends_on:
+      - mock-oa
+    networks:
+      - collab-preview-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5009/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+networks:
+  collab-preview-net:
+    name: collab-preview-net
+    driver: bridge
+
+volumes:
+  collab_preview_data:
+    name: collab_preview_data
+  collab_preview_uploads:
+    name: collab_preview_uploads

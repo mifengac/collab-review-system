@@ -57,6 +57,8 @@ class AuthConfigOut(BaseModel):
     oa_enabled: bool
     title: str
     oa_sync_on_login: bool = False
+    # 仅 DEBUG=true 且 OA_MOCK_ENABLED=true 时为 true（前端显示模拟环境标识）
+    oa_mock_enabled: bool = False
 
 
 class UserOut(ORMModel):

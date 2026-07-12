@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="/assets/css/style.css" />
 </head>
 <body class="login-page">
+  <div class="mock-oa-banner" id="mockOaBanner" style="display:none" role="status">
+    当前为模拟 OA 数据，仅用于开发测试。
+  </div>
   <div class="login-card">
     <div class="login-head">
       <h1 id="appTitle">材料协同办理系统</h1>
@@ -45,6 +48,10 @@
         if (cfg.title) {
           document.getElementById("appTitle").textContent = cfg.title;
           document.title = "登录 - " + cfg.title;
+        }
+        const mockBanner = document.getElementById("mockOaBanner");
+        if (mockBanner && cfg.oa_mock_enabled) {
+          mockBanner.style.display = "block";
         }
         const btn = document.getElementById("btnLogin");
         const tip = document.getElementById("loginTip");

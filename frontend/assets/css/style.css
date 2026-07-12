@@ -807,6 +807,25 @@ table.data td a {
   gap: 12px;
 }
 
+/* 模拟 OA 环境标识（非弹窗，不遮挡操作） */
+.mock-oa-banner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  background: #fff7ed;
+  border-bottom: 2px solid #f97316;
+  color: #9a3412;
+  text-align: center;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.login-page .mock-oa-banner {
+  margin-bottom: 12px;
+}
+
 @media (max-width: 960px) {
   .grid-3 {
     grid-template-columns: 1fr;
