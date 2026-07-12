@@ -51,17 +51,20 @@
               <label>截止时间</label>
               <input name="deadline" type="datetime-local" />
             </div>
-            <div class="form-group">
+            <div class="form-group" id="rowHandler">
               <label>承办人</label>
               <select name="handler_id" id="handler"></select>
             </div>
-            <div class="form-group">
+            <div class="form-group" id="rowLeaderA">
               <label>A 领导</label>
               <select name="leader_a_id" id="leader_a"></select>
             </div>
-            <div class="form-group">
+            <div class="form-group" id="rowLeaderB">
               <label>B 领导</label>
               <select name="leader_b_id" id="leader_b"></select>
+            </div>
+            <div class="form-group full" id="assignHint" style="display:none">
+              <p class="hint">参与人（承办人 / A·B 领导）请在事项详情页通过「分派/调整参与人」修改，不可通过保存表单变更。</p>
             </div>
             <div class="form-group full">
               <label>备注</label>
@@ -100,6 +103,12 @@
     }
 
     async function init() {
+      const me = getUser() || {};
+      if (!editId && !["admin", "office_clerk", "handler"].includes(me.role)) {
+        root.innerHTML = `<p class="hint" style="color:var(--danger)">当前角色不可创建事项。请联系办公室收文员或管理员。</p>`;
+        return;
+      }
+
       const [depts, tags, users] = await Promise.all([
         api("/api/dict/departments"),
         api("/api/dict/tags"),
@@ -116,30 +125,38 @@
         `<option value="">请选择</option>` +
         tags.map((t) => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join("");
 
-      const userOpts =
+      const handlers = users.filter((u) => u.role === "handler");
+      const leadersA = users.filter((u) => u.role === "leader_a");
+      const leadersB = users.filter((u) => u.role === "leader_b");
+      const opt = (list) =>
         `<option value="">请选择</option>` +
-        users
+        list
           .map(
             (u) =>
               `<option value="${u.id}">${escapeHtml(u.display_name)}（${escapeHtml(u.username)}）</option>`
           )
           .join("");
-      document.getElementById("handler").innerHTML = userOpts;
-      document.getElementById("leader_a").innerHTML = userOpts;
-      document.getElementById("leader_b").innerHTML = userOpts;
+      document.getElementById("handler").innerHTML = opt(handlers);
+      document.getElementById("leader_a").innerHTML = opt(leadersA);
+      document.getElementById("leader_b").innerHTML = opt(leadersB);
 
-      const me = getUser();
-      // 普通承办人默认自己；办公室/管理员可不选，后续分派
-      if (me && me.id && me.role !== "office_clerk" && me.role !== "admin") {
+      // 承办人创建默认自己；办公室/管理员可不选
+      if (me.role === "handler" && me.id) {
         document.getElementById("handler").value = String(me.id);
       }
 
-      const la = users.find((u) => u.username === "leader_a");
-      const lb = users.find((u) => u.username === "leader_b");
+      const la = leadersA.find((u) => u.username === "leader_a");
+      const lb = leadersB.find((u) => u.username === "leader_b");
       if (la) document.getElementById("leader_a").value = String(la.id);
       if (lb) document.getElementById("leader_b").value = String(lb.id);
 
       if (editId) {
+        // 编辑模式：参与人不可通过 PUT 提交，隐藏选择框
+        document.getElementById("rowHandler").style.display = "none";
+        document.getElementById("rowLeaderA").style.display = "none";
+        document.getElementById("rowLeaderB").style.display = "none";
+        document.getElementById("assignHint").style.display = "";
+
         const it = await api("/api/items/" + editId);
         const f = document.getElementById("f");
         f.title.value = it.title || "";
@@ -149,9 +166,6 @@
         f.business_tag.value = it.business_tag || "";
         f.urgency.value = it.urgency || "一般";
         f.deadline.value = toLocalInput(it.deadline);
-        f.handler_id.value = it.handler_id || "";
-        f.leader_a_id.value = it.leader_a_id || "";
-        f.leader_b_id.value = it.leader_b_id || "";
         f.remark.value = it.remark || "";
       }
     }
@@ -167,17 +181,18 @@
         business_tag: f.business_tag.value || null,
         urgency: f.urgency.value,
         deadline: fromLocalInput(f.deadline.value),
-        handler_id: f.handler_id.value ? Number(f.handler_id.value) : null,
-        leader_a_id: f.leader_a_id.value ? Number(f.leader_a_id.value) : null,
-        leader_b_id: f.leader_b_id.value ? Number(f.leader_b_id.value) : null,
         remark: f.remark.value.trim() || null,
       };
       try {
         if (editId) {
+          // 编辑仅提交基本字段，不含 handler / leader
           await api("/api/items/" + editId, { method: "PUT", body: JSON.stringify(body) });
           toast("已保存", "success");
           location.href = "/item_detail.html?id=" + editId;
         } else {
+          body.handler_id = f.handler_id.value ? Number(f.handler_id.value) : null;
+          body.leader_a_id = f.leader_a_id.value ? Number(f.leader_a_id.value) : null;
+          body.leader_b_id = f.leader_b_id.value ? Number(f.leader_b_id.value) : null;
           const it = await api("/api/items", { method: "POST", body: JSON.stringify(body) });
           toast("创建成功", "success");
           location.href = "/item_detail.html?id=" + it.id;

@@ -97,6 +97,8 @@ class ItemCreate(BaseModel):
 
 
 class ItemUpdate(BaseModel):
+    """仅基本字段；承办人/A/B 领导请使用 POST /api/items/{id}/assign。"""
+
     title: str | None = None
     oa_doc_no: str | None = None
     source_unit: str | None = None
@@ -104,9 +106,6 @@ class ItemUpdate(BaseModel):
     business_tag: str | None = None
     urgency: UrgencyLevel | None = None
     deadline: datetime | None = None
-    handler_id: int | None = None
-    leader_a_id: int | None = None
-    leader_b_id: int | None = None
     remark: str | None = None
 
 

@@ -70,20 +70,25 @@ def can_view_item(user: User, item: Item) -> bool:
 
 
 def can_edit_item(user: User, item: Item) -> bool:
-    """编辑基本信息：管理员、办公室、承办人；终态不可编辑。"""
+    """编辑基本信息：管理员、办公室、角色为 handler 且为本事项承办人。"""
     if item.status in LOCKED_STATUSES:
         return False
     if is_admin(user) or is_office_clerk(user):
         return True
+    # 必须是承办人角色；督办/领导即使误被设为 handler_id 也不可编辑
+    if user.role != UserRole.handler:
+        return False
     return item.handler_id is not None and user.id == item.handler_id
 
 
 def can_upload_document(user: User, item: Item) -> bool:
-    """上传：管理员、办公室、承办人；督办不可；终态不可。"""
+    """上传：管理员、办公室、角色为 handler 且为本事项承办人。"""
     if item.status in LOCKED_STATUSES:
         return False
     if is_admin(user) or is_office_clerk(user):
         return True
+    if user.role != UserRole.handler:
+        return False
     return item.handler_id is not None and user.id == item.handler_id
 
 
@@ -104,12 +109,18 @@ def can_supervise_item(user: User, item: Item) -> bool:
 
 
 def can_cancel_item(user: User, item: Item) -> bool:
-    """作废：管理员、办公室、创建人、承办人。"""
-    if item.status in (ItemStatus.archived, ItemStatus.cancelled):
+    """作废：管理员、办公室、创建人、承办人角色本人。"""
+    if item.status in (ItemStatus.finalized, ItemStatus.archived, ItemStatus.cancelled):
         return False
     if is_admin(user) or is_office_clerk(user):
         return True
-    return user.id in {item.creator_id, item.handler_id}
+    if user.role == UserRole.handler and user.id in {item.creator_id, item.handler_id}:
+        return True
+    return False
+
+
+def can_create_item(user: User) -> bool:
+    return user.role in {UserRole.admin, UserRole.office_clerk, UserRole.handler}
 
 
 def ensure_can_view_item(user: User, item: Item) -> None:

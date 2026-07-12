@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import CurrentUser
@@ -21,6 +21,7 @@ from app.schemas import (
 )
 from app.services import workflow
 from app.services.permissions import (
+    can_create_item,
     ensure_can_assign_item,
     ensure_can_edit_item,
     ensure_can_supervise_item,
@@ -65,6 +66,32 @@ def _user_label(db: Session, user_id: int | None) -> str:
     if not u:
         return f"#{user_id}"
     return f"{u.display_name}({u.username})"
+
+
+def _validate_assignee(db: Session, field: str, user_id: int | None) -> None:
+    """分派目标用户必须存在、启用，且角色匹配。"""
+    if user_id is None:
+        return
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u or not u.is_active:
+        labels = {
+            "handler_id": "承办人",
+            "leader_a_id": "A领导",
+            "leader_b_id": "B领导",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=f"{labels.get(field, '用户')}不存在或已禁用",
+        )
+    if field == "handler_id":
+        if u.role != UserRole.handler:
+            raise HTTPException(status_code=400, detail="承办人必须是启用的承办人账号")
+    elif field == "leader_a_id":
+        if u.role != UserRole.leader_a:
+            raise HTTPException(status_code=400, detail="A领导必须是启用的A领导账号")
+    elif field == "leader_b_id":
+        if u.role != UserRole.leader_b:
+            raise HTTPException(status_code=400, detail="B领导必须是启用的B领导账号")
 
 
 @router.get("/dashboard", response_model=DashboardOut)
@@ -142,11 +169,19 @@ def dashboard(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
 
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
-    finalized_today = base.filter(
-        Item.status.in_([ItemStatus.finalized, ItemStatus.archived]),
-        Item.updated_at >= day_start,
-        Item.updated_at < day_end,
-    ).count()
+    # 按「定稿」操作日志统计今日定稿（避免今日归档昨日定稿被计入）
+    fin_q = (
+        db.query(ActionLog.item_id)
+        .filter(
+            ActionLog.action == ActionType.finalize,
+            ActionLog.created_at >= day_start,
+            ActionLog.created_at < day_end,
+        )
+        .distinct()
+    )
+    if scope is not None:
+        fin_q = fin_q.join(Item, Item.id == ActionLog.item_id).filter(scope)
+    finalized_today = fin_q.count()
 
     return DashboardOut(
         todo=[ItemBrief.model_validate(i) for i in todo],
@@ -191,11 +226,21 @@ def create_item(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
+    if not can_create_item(user):
+        raise HTTPException(status_code=403, detail="当前角色不可创建事项")
+
     data = body.model_dump()
-    # 办公室/管理员创建时可暂不指定承办人；普通用户默认自己承办
+    # 校验创建时指定的参与人角色（与分派规则一致）
+    for field in ("handler_id", "leader_a_id", "leader_b_id"):
+        if data.get(field) is not None:
+            _validate_assignee(db, field, data[field])
+
+    # 办公室/管理员可暂不指定承办人；承办人创建时默认自己
     if not data.get("handler_id"):
-        if user.role not in (UserRole.admin, UserRole.office_clerk):
+        if user.role == UserRole.handler:
             data["handler_id"] = user.id
+        # admin / office_clerk 允许 handler_id 为空
+
     item = Item(
         **data,
         creator_id=user.id,
@@ -228,15 +273,25 @@ def get_item(item_id: int, user: CurrentUser, db: Annotated[Session, Depends(get
 @router.put("/{item_id}", response_model=ItemDetail)
 def update_item(
     item_id: int,
-    body: ItemUpdate,
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
+    payload: dict[str, Any] = Body(...),
 ):
+    """仅允许更新基本字段；参与人调整必须走 /assign。"""
+    forbidden = {"handler_id", "leader_a_id", "leader_b_id"}
+    if forbidden & set(payload.keys()):
+        raise HTTPException(
+            status_code=400,
+            detail="请使用分派接口调整承办人和审核领导",
+        )
+    try:
+        body = ItemUpdate.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="请求参数无效") from exc
+
     item = _get_item(db, item_id)
     ensure_can_edit_item(user, item)
     data = body.model_dump(exclude_unset=True)
-    # 非办公室/管理员通过 PUT 改参与人时限制：承办人可改自己负责事项的基本字段，
-    # 但 leader 调整建议走 assign；此处允许 office/admin 经 edit 改参与人，handler 也可改（兼容旧表单）
     for k, v in data.items():
         setattr(item, k, v)
     write_log(db, item, user, ActionType.update, detail="更新事项信息")
@@ -289,6 +344,7 @@ def assign_item(
                 detail=f"当前状态「{st.value}」不可调整{field_labels[field]}",
             )
         new_val = payload[field]
+        _validate_assignee(db, field, new_val)
         old_val = getattr(item, field)
         if old_val != new_val:
             changes.append(
