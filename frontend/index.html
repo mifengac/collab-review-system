@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>工作台 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const root = renderShell("dashboard", "工作台");
+
+    function itemRows(list) {
+      if (!list.length) {
+        return `<tr><td colspan="6" class="empty-row">暂无数据</td></tr>`;
+      }
+      return list
+        .map(
+          (it) => `
+        <tr>
+          <td><a href="/item_detail.html?id=${it.id}">${escapeHtml(it.title)}</a></td>
+          <td>${escapeHtml(it.oa_doc_no || "—")}</td>
+          <td>${escapeHtml(it.handler_dept || "—")}</td>
+          <td>${urgencyBadge(it.urgency)}</td>
+          <td>${statusBadge(it.status)}</td>
+          <td>${fmtTime(it.deadline)}</td>
+        </tr>`
+        )
+        .join("");
+    }
+
+    async function load() {
+      root.innerHTML = `<p class="hint">加载中…</p>`;
+      try {
+        const data = await api("/api/items/dashboard");
+        root.innerHTML = `
+          <div class="toolbar">
+            <a class="btn btn-primary" href="/item_form.html">＋ 新建事项</a>
+            <a class="btn" href="/items.html">全部事项</a>
+          </div>
+          <div class="grid-3">
+            <div class="stat-card">
+              <div class="label">我的待办</div>
+              <div class="num">${data.todo.length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">我发起的</div>
+              <div class="num">${data.my_created.length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">即将逾期（3日内）</div>
+              <div class="num">${data.overdue_soon.length}</div>
+            </div>
+          </div>
+          <div class="panel" style="margin-top:12px">
+            <div class="panel-hd">我的待办</div>
+            <div class="panel-bd table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>标题</th><th>OA文号</th><th>承办大队</th><th>紧急程度</th><th>状态</th><th>截止时间</th>
+                </tr></thead>
+                <tbody>${itemRows(data.todo)}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-hd">我发起的事项</div>
+              <div class="panel-bd table-wrap">
+                <table class="data">
+                  <thead><tr>
+                    <th>标题</th><th>状态</th><th>更新时间</th>
+                  </tr></thead>
+                  <tbody>
+                    ${
+                      data.my_created.length
+                        ? data.my_created
+                            .map(
+                              (it) => `<tr>
+                      <td><a href="/item_detail.html?id=${it.id}">${escapeHtml(it.title)}</a></td>
+                      <td>${statusBadge(it.status)}</td>
+                      <td>${fmtTime(it.updated_at)}</td>
+                    </tr>`
+                            )
+                            .join("")
+                        : `<tr><td colspan="3" class="empty-row">暂无</td></tr>`
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-hd">即将逾期</div>
+              <div class="panel-bd table-wrap">
+                <table class="data">
+                  <thead><tr>
+                    <th>标题</th><th>状态</th><th>截止时间</th>
+                  </tr></thead>
+                  <tbody>
+                    ${
+                      data.overdue_soon.length
+                        ? data.overdue_soon
+                            .map(
+                              (it) => `<tr>
+                      <td><a href="/item_detail.html?id=${it.id}">${escapeHtml(it.title)}</a></td>
+                      <td>${statusBadge(it.status)}</td>
+                      <td>${fmtTime(it.deadline)}</td>
+                    </tr>`
+                            )
+                            .join("")
+                        : `<tr><td colspan="3" class="empty-row">暂无</td></tr>`
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        `;
+      } catch (e) {
+        root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

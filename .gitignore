@@ -1,0 +1,48 @@
+# 环境与密钥
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 数据库
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# 上传文件（保留目录占位）
+uploads/*
+!uploads/.gitkeep
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# OA 抓包 / 敏感
+oa_dump/
+*.har
+cookies.json
+tokens.json
+
+# Docker
+*.log

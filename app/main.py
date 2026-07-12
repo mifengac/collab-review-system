@@ -1,0 +1,65 @@
+"""材料协同办理系统 — FastAPI 入口。"""
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.config import get_settings
+from app.database import SessionLocal, init_db
+from app.routers import auth, dict_api, documents, items, oa
+from app.services.files import ensure_upload_dir
+from app.services.seed import seed_all
+
+settings = get_settings()
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+DATA_DIR = BASE_DIR / "data"
+
+app = FastAPI(
+    title=settings.app_name,
+    description="公安内网材料协同审核系统 MVP",
+    version="1.0.0",
+)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_upload_dir()
+    init_db()
+    db = SessionLocal()
+    try:
+        seed_all(db)
+    finally:
+        db.close()
+
+
+app.include_router(auth.router)
+app.include_router(items.router)
+app.include_router(documents.router)
+app.include_router(dict_api.router)
+app.include_router(oa.router)
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "app": settings.app_name}
+
+
+# 静态前端
+if FRONTEND_DIR.is_dir():
+    assets_dir = FRONTEND_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    @app.get("/")
+    def index():
+        return RedirectResponse(url="/login.html")
+
+    @app.get("/{page_name}.html")
+    def html_page(page_name: str):
+        path = FRONTEND_DIR / f"{page_name}.html"
+        if path.is_file():
+            return FileResponse(path)
+        return RedirectResponse(url="/login.html")

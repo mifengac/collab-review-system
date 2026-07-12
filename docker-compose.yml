@@ -1,0 +1,25 @@
+services:
+  collab-review:
+    build: .
+    container_name: collab-review-system
+    ports:
+      - "5009:5009"
+    # 可选：复制 .env.example 为 .env 后取消下一行注释，以注入密钥
+    # env_file: .env
+    environment:
+      # 容器内 SQLite 路径；覆盖时在 shell 或 .env 中设置 DATABASE_URL
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/collab.db}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      SECRET_KEY: ${SECRET_KEY:-please-change-this-to-a-random-secret-key}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin@123456}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-系统管理员}
+      APP_PORT: "5009"
+    volumes:
+      - collab_data:/app/data
+      - collab_uploads:/app/uploads
+    restart: unless-stopped
+
+volumes:
+  collab_data:
+  collab_uploads:

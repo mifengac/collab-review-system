@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>系统设置 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const root = renderShell("settings", "系统设置 / 字典");
+
+    async function load() {
+      root.innerHTML = `<p class="hint">加载中…</p>`;
+      try {
+        const [depts, tags, users, oaInbox] = await Promise.all([
+          api("/api/dict/departments"),
+          api("/api/dict/tags"),
+          api("/api/auth/users"),
+          api("/api/oa/inbox"),
+        ]);
+
+        root.innerHTML = `
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-hd">组织字典 · 大队</div>
+              <div class="panel-bd table-wrap">
+                <table class="data">
+                  <thead><tr><th>#</th><th>名称</th><th>排序</th></tr></thead>
+                  <tbody>
+                    ${depts
+                      .map(
+                        (d) =>
+                          `<tr><td>${d.id}</td><td>${escapeHtml(d.name)}</td><td>${d.sort_order}</td></tr>`
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-hd">业务标签字典</div>
+              <div class="panel-bd table-wrap">
+                <table class="data">
+                  <thead><tr><th>#</th><th>标签</th><th>排序</th></tr></thead>
+                  <tbody>
+                    ${tags
+                      .map(
+                        (t) =>
+                          `<tr><td>${t.id}</td><td>${escapeHtml(t.name)}</td><td>${t.sort_order}</td></tr>`
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">用户列表</div>
+            <div class="panel-bd table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>ID</th><th>用户名</th><th>显示名</th><th>角色</th><th>单位</th>
+                </tr></thead>
+                <tbody>
+                  ${users
+                    .map(
+                      (u) => `<tr>
+                    <td>${u.id}</td>
+                    <td>${escapeHtml(u.username)}</td>
+                    <td>${escapeHtml(u.display_name)}</td>
+                    <td>${roleLabel(u.role)}</td>
+                    <td>${escapeHtml(u.unit || "—")}</td>
+                  </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+              <p class="hint" style="margin-top:8px">演示账号密码：Demo@123456（handler1 / leader_a / leader_b）。管理员密码见 .env 配置。</p>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">
+              <span>OA 对接预留</span>
+              <button class="btn btn-sm" type="button" id="btnOaSync">模拟同步 OA</button>
+            </div>
+            <div class="panel-bd">
+              <p class="hint" style="margin-bottom:8px">
+                接口预留：GET /api/oa/inbox · POST /api/oa/sync。数据表已预留 oa_flow_id / oa_step_id / oa_deal_index 等字段。当前返回 mock 数据，不接真实 OA。
+              </p>
+              <table class="data">
+                <thead><tr>
+                  <th>Flow ID</th><th>标题</th><th>文号</th><th>来文单位</th>
+                </tr></thead>
+                <tbody>
+                  ${
+                    oaInbox.length
+                      ? oaInbox
+                          .map(
+                            (o) => `<tr>
+                    <td>${escapeHtml(o.oa_flow_id)}</td>
+                    <td>${escapeHtml(o.title)}</td>
+                    <td>${escapeHtml(o.doc_no || "—")}</td>
+                    <td>${escapeHtml(o.source_unit || "—")}</td>
+                  </tr>`
+                          )
+                          .join("")
+                      : `<tr><td colspan="4" class="empty-row">无 mock 数据</td></tr>`
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">在线文档预留（ONLYOFFICE）</div>
+            <div class="panel-bd">
+              <p class="hint">
+                已预留接口：<br/>
+                · GET /api/documents/{id}/editor-config<br/>
+                · POST /api/office/callback/{document_id}<br/>
+                后续可单独部署 ONLYOFFICE Docs，再接入上述接口。事项详情页按钮显示「在线编辑（预留）」。
+              </p>
+            </div>
+          </div>
+        `;
+
+        document.getElementById("btnOaSync").onclick = async () => {
+          try {
+            const r = await api("/api/oa/sync", {
+              method: "POST",
+              body: JSON.stringify({ force: false }),
+            });
+            toast(r.message, "success");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      } catch (e) {
+        root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

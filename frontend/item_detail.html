@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>事项详情 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const id = qs("id");
+    const root = renderShell("items", "事项详情");
+    if (!id) {
+      root.innerHTML = `<p class="hint">缺少事项 ID</p>`;
+      throw new Error("no id");
+    }
+
+    let item = null;
+    let docs = [];
+
+    function userName(u) {
+      if (!u) return "—";
+      return escapeHtml(u.display_name || u.username);
+    }
+
+    function openModal(title, onOk, requireComment) {
+      const mask = document.getElementById("modalMask");
+      document.getElementById("modalTitle").textContent = title;
+      document.getElementById("modalComment").value = "";
+      document.getElementById("commentReq").style.display = requireComment ? "inline" : "none";
+      mask.classList.add("show");
+      mask._onOk = onOk;
+      mask._require = !!requireComment;
+    }
+
+    function closeModal() {
+      document.getElementById("modalMask").classList.remove("show");
+    }
+
+    async function wf(path, comment) {
+      item = await api("/api/items/" + id + path, {
+        method: "POST",
+        body: JSON.stringify({ comment: comment || null }),
+      });
+      toast("操作成功", "success");
+      await reload();
+    }
+
+    function actionBar() {
+      const s = item.status;
+      const btns = [];
+      if (["承办中", "A领导退回", "B领导退回", "草稿"].includes(s)) {
+        btns.push(`<button class="btn btn-primary" type="button" data-act="submit-a">提交 A 领导审核</button>`);
+      }
+      if (s === "A领导审核中") {
+        btns.push(`<button class="btn btn-success" type="button" data-act="approve-a">A 领导通过</button>`);
+        btns.push(`<button class="btn btn-danger" type="button" data-act="reject-a">A 领导退回</button>`);
+      }
+      if (s === "B领导审核中") {
+        btns.push(`<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`);
+        btns.push(`<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`);
+      }
+      if (s === "已定稿") {
+        btns.push(`<button class="btn" type="button" data-act="archive">归档</button>`);
+      }
+      if (!["已归档", "已作废"].includes(s)) {
+        btns.push(`<button class="btn" type="button" data-act="cancel">作废</button>`);
+      }
+      if (!["已定稿", "已归档", "已作废"].includes(s)) {
+        btns.push(`<a class="btn" href="/item_form.html?id=${id}">编辑</a>`);
+      }
+      btns.push(`<a class="btn" href="/items.html">返回列表</a>`);
+      return btns.join(" ");
+    }
+
+    function renderMeta() {
+      return `
+        <div class="meta-grid">
+          <div class="mk">标题</div><div class="mv" style="grid-column:span 3">${escapeHtml(item.title)}</div>
+          <div class="mk">状态</div><div class="mv">${statusBadge(item.status)}</div>
+          <div class="mk">紧急程度</div><div class="mv">${urgencyBadge(item.urgency)}</div>
+          <div class="mk">OA 文号</div><div class="mv">${escapeHtml(item.oa_doc_no || "—")}</div>
+          <div class="mk">来文单位</div><div class="mv">${escapeHtml(item.source_unit || "—")}</div>
+          <div class="mk">承办大队</div><div class="mv">${escapeHtml(item.handler_dept || "—")}</div>
+          <div class="mk">业务标签</div><div class="mv">${escapeHtml(item.business_tag || "—")}</div>
+          <div class="mk">承办人</div><div class="mv">${userName(item.handler)}</div>
+          <div class="mk">A 领导</div><div class="mv">${userName(item.leader_a)}</div>
+          <div class="mk">B 领导</div><div class="mv">${userName(item.leader_b)}</div>
+          <div class="mk">截止时间</div><div class="mv">${fmtTime(item.deadline)}</div>
+          <div class="mk">创建人</div><div class="mv">${userName(item.creator)}</div>
+          <div class="mk">创建时间</div><div class="mv">${fmtTime(item.created_at)}</div>
+          <div class="mk">更新时间</div><div class="mv">${fmtTime(item.updated_at)}</div>
+          <div class="mk">备注</div><div class="mv" style="grid-column:span 3">${escapeHtml(item.remark || "—")}</div>
+          <div class="mk">OA Flow ID</div><div class="mv">${escapeHtml(item.oa_flow_id || "（预留）")}</div>
+          <div class="mk">OA Step ID</div><div class="mv">${escapeHtml(item.oa_step_id || "（预留）")}</div>
+        </div>
+      `;
+    }
+
+    function renderDocs() {
+      if (!docs.length) {
+        return `<p class="hint">暂无文件，请上传主材料或附件。</p>`;
+      }
+      return docs
+        .map((d) => {
+          const vers = (d.versions || []).slice().sort((a, b) => b.version_no - a.version_no);
+          const rows = vers
+            .map(
+              (v) => `<tr>
+              <td>v${v.version_no}${v.version_no === d.current_version ? ' <span class="badge badge-done">当前</span>' : ""}</td>
+              <td>${escapeHtml(v.original_filename)}</td>
+              <td>${fileSize(v.file_size)}</td>
+              <td style="font-family:var(--mono);font-size:11px">${escapeHtml((v.sha256 || "").slice(0, 16))}…</td>
+              <td>${userName(v.uploader)}</td>
+              <td>${fmtTime(v.created_at)}</td>
+              <td>
+                <button class="btn btn-sm" type="button" data-dl="${v.id}">下载</button>
+              </td>
+            </tr>`
+            )
+            .join("");
+          return `
+            <div class="panel" style="margin-bottom:10px">
+              <div class="panel-hd">
+                <span>${d.kind === "main" ? "【主材料】" : "【附件】"} ${escapeHtml(d.name)}
+                  <span class="hint">当前 v${d.current_version}</span>
+                </span>
+                <span>
+                  <button class="btn btn-sm reserved-btn" type="button" data-editor="${d.id}">在线编辑（预留）</button>
+                </span>
+              </div>
+              <div class="panel-bd table-wrap">
+                <table class="data">
+                  <thead><tr>
+                    <th>版本</th><th>文件名</th><th>大小</th><th>SHA256</th><th>上传人</th><th>上传时间</th><th>操作</th>
+                  </tr></thead>
+                  <tbody>${rows || `<tr><td colspan="7" class="empty-row">无版本</td></tr>`}</tbody>
+                </table>
+              </div>
+            </div>`;
+        })
+        .join("");
+    }
+
+    function renderTimeline(logs) {
+      if (!logs.length) return `<p class="hint">暂无记录</p>`;
+      return (
+        `<div class="timeline">` +
+        logs
+          .map(
+            (l) => `
+          <div class="timeline-item">
+            <div class="t-time">${fmtTime(l.created_at)}</div>
+            <div class="t-action">${escapeHtml(l.action)}</div>
+            <div class="t-meta">
+              ${userName(l.actor)}
+              ${l.from_status ? ` · ${escapeHtml(l.from_status)} → ${escapeHtml(l.to_status || "")}` : ""}
+              ${l.detail ? ` · ${escapeHtml(l.detail)}` : ""}
+            </div>
+            ${l.comment ? `<div class="t-comment">${escapeHtml(l.comment)}</div>` : ""}
+          </div>`
+          )
+          .join("") +
+        `</div>`
+      );
+    }
+
+    async function reload() {
+      const [it, dlist, logs] = await Promise.all([
+        api("/api/items/" + id),
+        api("/api/items/" + id + "/documents"),
+        api("/api/items/" + id + "/timeline"),
+      ]);
+      item = it;
+      docs = dlist;
+      document.title = item.title + " - 事项详情";
+
+      root.innerHTML = `
+        <div class="toolbar">
+          ${actionBar()}
+        </div>
+        <div class="panel">
+          <div class="panel-hd">基本信息 · #${item.id}</div>
+          <div class="panel-bd">${renderMeta()}</div>
+        </div>
+        <div class="tabs" id="tabs">
+          <button type="button" class="active" data-tab="files">文件版本</button>
+          <button type="button" data-tab="flow">流转时间线</button>
+        </div>
+        <div class="tab-pane active" id="pane-files">
+          <div class="panel">
+            <div class="panel-hd">上传文件</div>
+            <div class="panel-bd">
+              <div class="upload-row">
+                <label class="file-input-label">
+                  选择文件
+                  <input type="file" id="fileInput" accept=".docx,.xlsx,.pdf,.jpg,.jpeg,.png" />
+                </label>
+                <select id="fileKind">
+                  <option value="main">主材料 (docx)</option>
+                  <option value="attachment">附件</option>
+                </select>
+                <button class="btn btn-primary" type="button" id="btnUpload">上传（生成新版本）</button>
+                <span class="hint" id="fileNameHint"></span>
+              </div>
+              <p class="hint">主材料限 docx；附件支持 docx / xlsx / pdf / jpg / png。每次上传均新增版本，历史不可覆盖。</p>
+            </div>
+          </div>
+          <div id="docList">${renderDocs()}</div>
+        </div>
+        <div class="tab-pane" id="pane-flow">
+          <div class="panel">
+            <div class="panel-hd">操作留痕</div>
+            <div class="panel-bd">${renderTimeline(logs)}</div>
+          </div>
+        </div>
+
+        <div class="modal-mask" id="modalMask">
+          <div class="modal">
+            <div class="modal-hd">
+              <span id="modalTitle">操作确认</span>
+              <button type="button" class="close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-bd">
+              <div class="form-group">
+                <label>意见 <span class="req" id="commentReq" style="display:none">*</span></label>
+                <textarea id="modalComment" rows="4" placeholder="请填写审核意见（退回时必填）"></textarea>
+              </div>
+            </div>
+            <div class="modal-ft">
+              <button type="button" class="btn" id="modalCancel">取消</button>
+              <button type="button" class="btn btn-primary" id="modalOk">确定</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      bindEvents();
+    }
+
+    function bindEvents() {
+      document.getElementById("tabs").onclick = (e) => {
+        const btn = e.target.closest("button[data-tab]");
+        if (!btn) return;
+        document.querySelectorAll("#tabs button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
+        document.getElementById("pane-" + btn.dataset.tab).classList.add("active");
+      };
+
+      const actMap = {
+        "submit-a": { path: "/submit-a", title: "提交 A 领导审核", require: false },
+        "approve-a": { path: "/approve-a", title: "A 领导通过", require: false },
+        "reject-a": { path: "/reject-a", title: "A 领导退回", require: true },
+        finalize: { path: "/finalize", title: "B 领导定稿", require: false },
+        "reject-b": { path: "/reject-b", title: "B 领导退回", require: true },
+        archive: { path: "/archive", title: "归档", require: false },
+        cancel: { path: "/cancel", title: "作废", require: false },
+      };
+
+      root.querySelectorAll("[data-act]").forEach((btn) => {
+        btn.onclick = () => {
+          const cfg = actMap[btn.dataset.act];
+          if (!cfg) return;
+          openModal(cfg.title, (comment) => wf(cfg.path, comment), cfg.require);
+        };
+      });
+
+      document.getElementById("modalClose").onclick = closeModal;
+      document.getElementById("modalCancel").onclick = closeModal;
+      document.getElementById("modalOk").onclick = async () => {
+        const mask = document.getElementById("modalMask");
+        const comment = document.getElementById("modalComment").value.trim();
+        if (mask._require && !comment) {
+          toast("请填写意见", "error");
+          return;
+        }
+        closeModal();
+        try {
+          await mask._onOk(comment);
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+
+      const fi = document.getElementById("fileInput");
+      fi.onchange = () => {
+        document.getElementById("fileNameHint").textContent = fi.files[0]
+          ? fi.files[0].name
+          : "";
+      };
+
+      document.getElementById("btnUpload").onclick = async () => {
+        if (!fi.files[0]) {
+          toast("请先选择文件", "error");
+          return;
+        }
+        const fd = new FormData();
+        fd.append("file", fi.files[0]);
+        fd.append("kind", document.getElementById("fileKind").value);
+        try {
+          await api("/api/items/" + id + "/upload", { method: "POST", body: fd });
+          toast("上传成功，已生成新版本", "success");
+          await reload();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+
+      root.querySelectorAll("[data-dl]").forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            const res = await api("/api/versions/" + btn.dataset.dl + "/download");
+            const blob = await res.blob();
+            const cd = res.headers.get("content-disposition") || "";
+            let name = "download";
+            const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd);
+            if (m) name = decodeURIComponent(m[1].replace(/"/g, ""));
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(a.href);
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      });
+
+      root.querySelectorAll("[data-editor]").forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            const cfg = await api("/api/documents/" + btn.dataset.editor + "/editor-config");
+            alert(cfg.message + "\n\n接口已预留：GET /api/documents/{id}/editor-config\nPOST /api/office/callback/{document_id}");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      });
+    }
+
+    reload().catch((e) => {
+      root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>新建/编辑事项 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const editId = qs("id");
+    const root = renderShell(editId ? "items" : "new", editId ? "编辑事项" : "新建事项");
+
+    root.innerHTML = `
+      <div class="panel">
+        <div class="panel-hd">${editId ? "编辑协同事项 #" + editId : "新建协同事项"}</div>
+        <div class="panel-bd">
+          <form id="f" class="form-grid">
+            <div class="form-group full">
+              <label>标题 <span class="req">*</span></label>
+              <input name="title" required maxlength="256" />
+            </div>
+            <div class="form-group">
+              <label>OA 文号 / 来文编号</label>
+              <input name="oa_doc_no" maxlength="128" />
+            </div>
+            <div class="form-group">
+              <label>来文单位</label>
+              <input name="source_unit" maxlength="128" />
+            </div>
+            <div class="form-group">
+              <label>承办大队</label>
+              <select name="handler_dept" id="dept"></select>
+            </div>
+            <div class="form-group">
+              <label>业务标签</label>
+              <select name="business_tag" id="tag"></select>
+            </div>
+            <div class="form-group">
+              <label>紧急程度</label>
+              <select name="urgency">
+                <option value="一般">一般</option>
+                <option value="重要">重要</option>
+                <option value="紧急">紧急</option>
+                <option value="特急">特急</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>截止时间</label>
+              <input name="deadline" type="datetime-local" />
+            </div>
+            <div class="form-group">
+              <label>承办人</label>
+              <select name="handler_id" id="handler"></select>
+            </div>
+            <div class="form-group">
+              <label>A 领导</label>
+              <select name="leader_a_id" id="leader_a"></select>
+            </div>
+            <div class="form-group">
+              <label>B 领导</label>
+              <select name="leader_b_id" id="leader_b"></select>
+            </div>
+            <div class="form-group full">
+              <label>备注</label>
+              <textarea name="remark" rows="3"></textarea>
+            </div>
+            <div class="form-actions full">
+              <button type="submit" class="btn btn-primary">${editId ? "保存" : "创建事项"}</button>
+              <a class="btn" href="${editId ? "/item_detail.html?id=" + editId : "/items.html"}">取消</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+
+    function toLocalInput(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return (
+        d.getFullYear() +
+        "-" +
+        p(d.getMonth() + 1) +
+        "-" +
+        p(d.getDate()) +
+        "T" +
+        p(d.getHours()) +
+        ":" +
+        p(d.getMinutes())
+      );
+    }
+
+    function fromLocalInput(v) {
+      if (!v) return null;
+      return new Date(v).toISOString();
+    }
+
+    async function init() {
+      const [depts, tags, users] = await Promise.all([
+        api("/api/dict/departments"),
+        api("/api/dict/tags"),
+        api("/api/auth/users"),
+      ]);
+
+      const deptSel = document.getElementById("dept");
+      deptSel.innerHTML =
+        `<option value="">请选择</option>` +
+        depts.map((d) => `<option value="${escapeHtml(d.name)}">${escapeHtml(d.name)}</option>`).join("");
+
+      const tagSel = document.getElementById("tag");
+      tagSel.innerHTML =
+        `<option value="">请选择</option>` +
+        tags.map((t) => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join("");
+
+      const userOpts =
+        `<option value="">请选择</option>` +
+        users
+          .map(
+            (u) =>
+              `<option value="${u.id}">${escapeHtml(u.display_name)}（${escapeHtml(u.username)}）</option>`
+          )
+          .join("");
+      document.getElementById("handler").innerHTML = userOpts;
+      document.getElementById("leader_a").innerHTML = userOpts;
+      document.getElementById("leader_b").innerHTML = userOpts;
+
+      const me = getUser();
+      if (me && me.id) {
+        document.getElementById("handler").value = String(me.id);
+      }
+
+      // 默认选中演示领导
+      const la = users.find((u) => u.username === "leader_a");
+      const lb = users.find((u) => u.username === "leader_b");
+      if (la) document.getElementById("leader_a").value = String(la.id);
+      if (lb) document.getElementById("leader_b").value = String(lb.id);
+
+      if (editId) {
+        const it = await api("/api/items/" + editId);
+        const f = document.getElementById("f");
+        f.title.value = it.title || "";
+        f.oa_doc_no.value = it.oa_doc_no || "";
+        f.source_unit.value = it.source_unit || "";
+        f.handler_dept.value = it.handler_dept || "";
+        f.business_tag.value = it.business_tag || "";
+        f.urgency.value = it.urgency || "一般";
+        f.deadline.value = toLocalInput(it.deadline);
+        f.handler_id.value = it.handler_id || "";
+        f.leader_a_id.value = it.leader_a_id || "";
+        f.leader_b_id.value = it.leader_b_id || "";
+        f.remark.value = it.remark || "";
+      }
+    }
+
+    document.getElementById("f").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const body = {
+        title: f.title.value.trim(),
+        oa_doc_no: f.oa_doc_no.value.trim() || null,
+        source_unit: f.source_unit.value.trim() || null,
+        handler_dept: f.handler_dept.value || null,
+        business_tag: f.business_tag.value || null,
+        urgency: f.urgency.value,
+        deadline: fromLocalInput(f.deadline.value),
+        handler_id: f.handler_id.value ? Number(f.handler_id.value) : null,
+        leader_a_id: f.leader_a_id.value ? Number(f.leader_a_id.value) : null,
+        leader_b_id: f.leader_b_id.value ? Number(f.leader_b_id.value) : null,
+        remark: f.remark.value.trim() || null,
+      };
+      try {
+        if (editId) {
+          await api("/api/items/" + editId, { method: "PUT", body: JSON.stringify(body) });
+          toast("已保存", "success");
+          location.href = "/item_detail.html?id=" + editId;
+        } else {
+          const it = await api("/api/items", { method: "POST", body: JSON.stringify(body) });
+          toast("创建成功", "success");
+          location.href = "/item_detail.html?id=" + it.id;
+        }
+      } catch (ex) {
+        toast(ex.message, "error");
+      }
+    });
+
+    init().catch((e) => toast(e.message, "error"));
+  </script>
+</body>
+</html>

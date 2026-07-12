@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>事项列表 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+    const root = renderShell("items", "事项列表");
+
+    const STATUSES = [
+      "",
+      "草稿",
+      "承办中",
+      "A领导审核中",
+      "A领导退回",
+      "B领导审核中",
+      "B领导退回",
+      "已定稿",
+      "已归档",
+      "已作废",
+    ];
+
+    root.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="kw" placeholder="标题 / 文号 / 来文单位" style="width:220px" />
+        <select id="st">
+          ${STATUSES.map((s) => `<option value="${s}">${s || "全部状态"}</option>`).join("")}
+        </select>
+        <button class="btn" type="button" id="btnSearch">查询</button>
+        <div class="spacer"></div>
+        <a class="btn btn-primary" href="/item_form.html">＋ 新建事项</a>
+      </div>
+      <div class="panel">
+        <div class="panel-hd"><span>协同事项</span><span class="hint" id="cnt"></span></div>
+        <div class="panel-bd table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th style="width:48px">ID</th>
+                <th>标题</th>
+                <th>OA文号</th>
+                <th>来文单位</th>
+                <th>承办大队</th>
+                <th>业务标签</th>
+                <th>紧急程度</th>
+                <th>状态</th>
+                <th>截止时间</th>
+                <th>更新时间</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"><tr><td colspan="10" class="empty-row">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    async function load() {
+      const kw = document.getElementById("kw").value.trim();
+      const st = document.getElementById("st").value;
+      let url = "/api/items?limit=200";
+      if (kw) url += "&keyword=" + encodeURIComponent(kw);
+      if (st) url += "&status=" + encodeURIComponent(st);
+      try {
+        const list = await api(url);
+        document.getElementById("cnt").textContent = "共 " + list.length + " 条";
+        const tb = document.getElementById("tbody");
+        if (!list.length) {
+          tb.innerHTML = `<tr><td colspan="10" class="empty-row">暂无事项</td></tr>`;
+          return;
+        }
+        tb.innerHTML = list
+          .map(
+            (it) => `<tr>
+            <td>${it.id}</td>
+            <td><a href="/item_detail.html?id=${it.id}">${escapeHtml(it.title)}</a></td>
+            <td>${escapeHtml(it.oa_doc_no || "—")}</td>
+            <td>${escapeHtml(it.source_unit || "—")}</td>
+            <td>${escapeHtml(it.handler_dept || "—")}</td>
+            <td>${escapeHtml(it.business_tag || "—")}</td>
+            <td>${urgencyBadge(it.urgency)}</td>
+            <td>${statusBadge(it.status)}</td>
+            <td>${fmtTime(it.deadline)}</td>
+            <td>${fmtTime(it.updated_at)}</td>
+          </tr>`
+          )
+          .join("");
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    }
+
+    document.getElementById("btnSearch").onclick = load;
+    document.getElementById("kw").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") load();
+    });
+    load();
+  </script>
+</body>
+</html>

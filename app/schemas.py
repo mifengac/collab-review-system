@@ -1,0 +1,220 @@
+"""Pydantic 请求/响应模型。"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.models import ActionType, FileKind, ItemStatus, UrgencyLevel, UserRole
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------- Auth ----------
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: "UserOut"
+
+
+class UserOut(ORMModel):
+    id: int
+    username: str
+    display_name: str
+    role: UserRole
+    unit: str | None = None
+    is_active: bool
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str = Field(min_length=6)
+    display_name: str
+    role: UserRole = UserRole.handler
+    unit: str | None = None
+
+
+class UserUpdate(BaseModel):
+    display_name: str | None = None
+    role: UserRole | None = None
+    unit: str | None = None
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=6)
+
+
+# ---------- Dict ----------
+class DepartmentOut(ORMModel):
+    id: int
+    name: str
+    sort_order: int
+    is_active: bool
+
+
+class BusinessTagOut(ORMModel):
+    id: int
+    name: str
+    sort_order: int
+    is_active: bool
+
+
+# ---------- Item ----------
+class ItemCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    oa_doc_no: str | None = None
+    source_unit: str | None = None
+    handler_dept: str | None = None
+    business_tag: str | None = None
+    urgency: UrgencyLevel = UrgencyLevel.normal
+    deadline: datetime | None = None
+    handler_id: int | None = None
+    leader_a_id: int | None = None
+    leader_b_id: int | None = None
+    remark: str | None = None
+    # OA 预留
+    oa_flow_id: str | None = None
+    oa_step_id: str | None = None
+    oa_deal_index: str | None = None
+    oa_raw_title: str | None = None
+    oa_raw_doc_no: str | None = None
+
+
+class ItemUpdate(BaseModel):
+    title: str | None = None
+    oa_doc_no: str | None = None
+    source_unit: str | None = None
+    handler_dept: str | None = None
+    business_tag: str | None = None
+    urgency: UrgencyLevel | None = None
+    deadline: datetime | None = None
+    handler_id: int | None = None
+    leader_a_id: int | None = None
+    leader_b_id: int | None = None
+    remark: str | None = None
+
+
+class ItemBrief(ORMModel):
+    id: int
+    title: str
+    oa_doc_no: str | None
+    source_unit: str | None
+    handler_dept: str | None
+    business_tag: str | None
+    urgency: UrgencyLevel
+    deadline: datetime | None
+    status: ItemStatus
+    creator_id: int
+    handler_id: int | None
+    leader_a_id: int | None
+    leader_b_id: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ItemDetail(ItemBrief):
+    remark: str | None
+    oa_flow_id: str | None
+    oa_step_id: str | None
+    oa_deal_index: str | None
+    oa_raw_title: str | None
+    oa_raw_doc_no: str | None
+    creator: UserOut | None = None
+    handler: UserOut | None = None
+    leader_a: UserOut | None = None
+    leader_b: UserOut | None = None
+
+
+class WorkflowAction(BaseModel):
+    comment: str | None = None
+
+
+# ---------- Document / File ----------
+class FileVersionOut(ORMModel):
+    id: int
+    document_id: int
+    version_no: int
+    original_filename: str
+    content_type: str | None
+    file_size: int
+    sha256: str
+    uploader_id: int
+    created_at: datetime
+    uploader: UserOut | None = None
+
+
+class DocumentOut(ORMModel):
+    id: int
+    item_id: int
+    name: str
+    kind: FileKind
+    current_version: int
+    created_at: datetime
+    versions: list[FileVersionOut] = []
+
+
+# ---------- Action log ----------
+class ActionLogOut(ORMModel):
+    id: int
+    item_id: int
+    actor_id: int
+    action: ActionType
+    comment: str | None
+    detail: str | None
+    from_status: str | None
+    to_status: str | None
+    created_at: datetime
+    actor: UserOut | None = None
+
+
+# ---------- Dashboard ----------
+class DashboardOut(BaseModel):
+    todo: list[ItemBrief]
+    my_created: list[ItemBrief]
+    overdue_soon: list[ItemBrief]
+
+
+# ---------- OA 预留 ----------
+class OAInboxItem(BaseModel):
+    oa_flow_id: str
+    oa_step_id: str | None = None
+    oa_deal_index: str | None = None
+    title: str
+    doc_no: str | None = None
+    source_unit: str | None = None
+    received_at: datetime | None = None
+
+
+class OASyncRequest(BaseModel):
+    force: bool = False
+
+
+class OASyncResponse(BaseModel):
+    success: bool
+    message: str
+    imported: int = 0
+    data: list[Any] = []
+
+
+# ---------- Office 预留 ----------
+class EditorConfigOut(BaseModel):
+    document_id: int
+    mode: str = "view"
+    reserved: bool = True
+    message: str = "在线编辑功能预留，后续接入 ONLYOFFICE Docs"
+    editor_url: str | None = None
+    config: dict[str, Any] = {}
+
+
+class MessageOut(BaseModel):
+    message: str
+    detail: Any = None
+
+
+TokenResponse.model_rebuild()
