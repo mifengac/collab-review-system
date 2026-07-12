@@ -50,6 +50,16 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=6)
 
 
+class UserOption(ORMModel):
+    """新建/分派事项时的选人列表（精简字段）。"""
+
+    id: int
+    username: str
+    display_name: str
+    role: UserRole
+    unit: str | None = None
+
+
 # ---------- Dict ----------
 class DepartmentOut(ORMModel):
     id: int
@@ -135,6 +145,17 @@ class WorkflowAction(BaseModel):
     comment: str | None = None
 
 
+class ItemAssign(BaseModel):
+    handler_id: int | None = None
+    leader_a_id: int | None = None
+    leader_b_id: int | None = None
+    comment: str | None = None
+
+
+class SuperviseAction(BaseModel):
+    comment: str = Field(min_length=1)
+
+
 # ---------- Document / File ----------
 class FileVersionOut(ORMModel):
     id: int
@@ -174,10 +195,18 @@ class ActionLogOut(ORMModel):
 
 
 # ---------- Dashboard ----------
+class DashboardStats(BaseModel):
+    in_progress: int = 0
+    overdue_soon: int = 0
+    overdue: int = 0
+    finalized_today: int = 0
+
+
 class DashboardOut(BaseModel):
     todo: list[ItemBrief]
     my_created: list[ItemBrief]
     overdue_soon: list[ItemBrief]
+    stats: DashboardStats = DashboardStats()
 
 
 # ---------- OA 预留 ----------

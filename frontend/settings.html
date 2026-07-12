@@ -10,19 +10,109 @@
   <script src="/assets/js/common.js"></script>
   <script>
     if (!requireAuth()) throw new Error("redirect");
-    const root = renderShell("settings", "系统设置 / 字典");
+    const root = renderShell("settings", "系统设置 / 用户与字典");
+    const me = getUser() || {};
+    const isAdmin = me.role === "admin";
+    const canListUsers = isAdmin || me.role === "office_clerk";
+
+    const ROLES = [
+      ["admin", "管理员"],
+      ["office_clerk", "办公室收文员"],
+      ["supervisor", "督办人员"],
+      ["handler", "承办人"],
+      ["leader_a", "A领导"],
+      ["leader_b", "B领导"],
+      ["viewer", "只读"],
+    ];
+
+    function roleOptions(selected) {
+      return ROLES.map(
+        ([v, lab]) =>
+          `<option value="${v}" ${v === selected ? "selected" : ""}>${lab}</option>`
+      ).join("");
+    }
 
     async function load() {
       root.innerHTML = `<p class="hint">加载中…</p>`;
       try {
-        const [depts, tags, users, oaInbox] = await Promise.all([
+        const tasks = [
           api("/api/dict/departments"),
           api("/api/dict/tags"),
-          api("/api/auth/users"),
           api("/api/oa/inbox"),
-        ]);
+        ];
+        if (canListUsers) tasks.push(api("/api/auth/users"));
+        const results = await Promise.all(tasks);
+        const depts = results[0];
+        const tags = results[1];
+        const oaInbox = results[2];
+        const users = canListUsers ? results[3] : [];
 
         root.innerHTML = `
+          <div class="panel">
+            <div class="panel-hd">当前登录</div>
+            <div class="panel-bd">
+              <div class="meta-grid">
+                <div class="mk">用户名</div><div class="mv">${escapeHtml(me.username || "")}</div>
+                <div class="mk">姓名</div><div class="mv">${escapeHtml(me.display_name || "")}</div>
+                <div class="mk">角色</div><div class="mv">${roleLabel(me.role)}</div>
+                <div class="mk">单位</div><div class="mv">${escapeHtml(me.unit || "—")}</div>
+              </div>
+            </div>
+          </div>
+
+          ${
+            canListUsers
+              ? `
+          <div class="panel">
+            <div class="panel-hd">
+              <span>用户管理</span>
+              ${
+                isAdmin
+                  ? `<button class="btn btn-sm btn-primary" type="button" id="btnNewUser">＋ 新增用户</button>`
+                  : `<span class="hint">仅管理员可新增/修改用户</span>`
+              }
+            </div>
+            <div class="panel-bd table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>ID</th><th>用户名</th><th>姓名</th><th>角色</th><th>单位</th><th>状态</th>
+                  ${isAdmin ? "<th>操作</th>" : ""}
+                </tr></thead>
+                <tbody>
+                  ${users
+                    .map(
+                      (u) => `<tr>
+                    <td>${u.id}</td>
+                    <td>${escapeHtml(u.username)}</td>
+                    <td>${escapeHtml(u.display_name)}</td>
+                    <td>${roleLabel(u.role)}</td>
+                    <td>${escapeHtml(u.unit || "—")}</td>
+                    <td>${u.is_active ? '<span class="badge badge-done">启用</span>' : '<span class="badge badge-cancel">禁用</span>'}</td>
+                    ${
+                      isAdmin
+                        ? `<td>
+                      <button class="btn btn-sm" type="button" data-edit="${u.id}">编辑</button>
+                      <button class="btn btn-sm" type="button" data-pwd="${u.id}">重置密码</button>
+                    </td>`
+                        : ""
+                    }
+                  </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+              <p class="hint" style="margin-top:8px">
+                演示账号（SEED_DEMO_USERS=true）：office1 / supervisor1 / handler1 / leader_a / leader_b，密码 Demo@123456。
+              </p>
+            </div>
+          </div>`
+              : `
+          <div class="panel">
+            <div class="panel-hd">用户管理</div>
+            <div class="panel-bd"><p class="hint">普通用户不可查看用户管理列表。新建事项选人请使用业务表单中的人员下拉（user-options）。</p></div>
+          </div>`
+          }
+
           <div class="two-col">
             <div class="panel">
               <div class="panel-hd">组织字典 · 大队</div>
@@ -57,30 +147,7 @@
               </div>
             </div>
           </div>
-          <div class="panel">
-            <div class="panel-hd">用户列表</div>
-            <div class="panel-bd table-wrap">
-              <table class="data">
-                <thead><tr>
-                  <th>ID</th><th>用户名</th><th>显示名</th><th>角色</th><th>单位</th>
-                </tr></thead>
-                <tbody>
-                  ${users
-                    .map(
-                      (u) => `<tr>
-                    <td>${u.id}</td>
-                    <td>${escapeHtml(u.username)}</td>
-                    <td>${escapeHtml(u.display_name)}</td>
-                    <td>${roleLabel(u.role)}</td>
-                    <td>${escapeHtml(u.unit || "—")}</td>
-                  </tr>`
-                    )
-                    .join("")}
-                </tbody>
-              </table>
-              <p class="hint" style="margin-top:8px">演示账号（handler1 / leader_a / leader_b，密码 Demo@123456）仅在 SEED_DEMO_USERS=true 时创建。管理员密码见 .env。</p>
-            </div>
-          </div>
+
           <div class="panel">
             <div class="panel-hd">
               <span>OA 对接预留</span>
@@ -88,12 +155,10 @@
             </div>
             <div class="panel-bd">
               <p class="hint" style="margin-bottom:8px">
-                接口预留：GET /api/oa/inbox · POST /api/oa/sync。数据表已预留 oa_flow_id / oa_step_id / oa_deal_index 等字段。当前返回 mock 数据，不接真实 OA。
+                GET /api/oa/inbox · POST /api/oa/sync。当前 mock，不接真实 OA。
               </p>
               <table class="data">
-                <thead><tr>
-                  <th>Flow ID</th><th>标题</th><th>文号</th><th>来文单位</th>
-                </tr></thead>
+                <thead><tr><th>Flow ID</th><th>标题</th><th>文号</th><th>来文单位</th></tr></thead>
                 <tbody>
                   ${
                     oaInbox.length
@@ -113,15 +178,47 @@
               </table>
             </div>
           </div>
-          <div class="panel">
-            <div class="panel-hd">在线文档预留（ONLYOFFICE）</div>
-            <div class="panel-bd">
-              <p class="hint">
-                已预留接口：<br/>
-                · GET /api/documents/{id}/editor-config<br/>
-                · POST /api/office/callback/{document_id}<br/>
-                后续可单独部署 ONLYOFFICE Docs，再接入上述接口。事项详情页按钮显示「在线编辑（预留）」。
-              </p>
+
+          <div class="modal-mask" id="userModal">
+            <div class="modal" style="width:460px">
+              <div class="modal-hd">
+                <span id="userModalTitle">用户</span>
+                <button type="button" class="close" id="userModalClose">&times;</button>
+              </div>
+              <div class="modal-bd">
+                <input type="hidden" id="editUserId" />
+                <div class="form-group" style="margin-bottom:8px" id="rowUsername">
+                  <label>用户名 <span class="req">*</span></label>
+                  <input id="fUsername" maxlength="64" />
+                </div>
+                <div class="form-group" style="margin-bottom:8px" id="rowPassword">
+                  <label>密码 <span class="req">*</span></label>
+                  <input id="fPassword" type="password" minlength="6" />
+                </div>
+                <div class="form-group" style="margin-bottom:8px">
+                  <label>姓名 <span class="req">*</span></label>
+                  <input id="fDisplay" maxlength="64" />
+                </div>
+                <div class="form-group" style="margin-bottom:8px">
+                  <label>角色</label>
+                  <select id="fRole">${roleOptions("handler")}</select>
+                </div>
+                <div class="form-group" style="margin-bottom:8px">
+                  <label>单位</label>
+                  <input id="fUnit" maxlength="128" />
+                </div>
+                <div class="form-group" id="rowActive" style="display:none;margin-bottom:8px">
+                  <label>状态</label>
+                  <select id="fActive">
+                    <option value="true">启用</option>
+                    <option value="false">禁用</option>
+                  </select>
+                </div>
+              </div>
+              <div class="modal-ft">
+                <button type="button" class="btn" id="userModalCancel">取消</button>
+                <button type="button" class="btn btn-primary" id="userModalOk">保存</button>
+              </div>
             </div>
           </div>
         `;
@@ -133,6 +230,106 @@
               body: JSON.stringify({ force: false }),
             });
             toast(r.message, "success");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+
+        if (!isAdmin) return;
+
+        const um = document.getElementById("userModal");
+        const closeUm = () => um.classList.remove("show");
+        document.getElementById("userModalClose").onclick = closeUm;
+        document.getElementById("userModalCancel").onclick = closeUm;
+
+        let mode = "create";
+
+        document.getElementById("btnNewUser").onclick = () => {
+          mode = "create";
+          document.getElementById("userModalTitle").textContent = "新增用户";
+          document.getElementById("editUserId").value = "";
+          document.getElementById("fUsername").value = "";
+          document.getElementById("fUsername").disabled = false;
+          document.getElementById("rowUsername").style.display = "";
+          document.getElementById("rowPassword").style.display = "";
+          document.getElementById("fPassword").value = "";
+          document.getElementById("fDisplay").value = "";
+          document.getElementById("fRole").value = "handler";
+          document.getElementById("fUnit").value = "";
+          document.getElementById("rowActive").style.display = "none";
+          um.classList.add("show");
+        };
+
+        root.querySelectorAll("[data-edit]").forEach((btn) => {
+          btn.onclick = () => {
+            const u = users.find((x) => String(x.id) === btn.dataset.edit);
+            if (!u) return;
+            mode = "edit";
+            document.getElementById("userModalTitle").textContent = "编辑用户";
+            document.getElementById("editUserId").value = u.id;
+            document.getElementById("rowUsername").style.display = "none";
+            document.getElementById("rowPassword").style.display = "none";
+            document.getElementById("fDisplay").value = u.display_name || "";
+            document.getElementById("fRole").value = u.role;
+            document.getElementById("fUnit").value = u.unit || "";
+            document.getElementById("rowActive").style.display = "";
+            document.getElementById("fActive").value = u.is_active ? "true" : "false";
+            um.classList.add("show");
+          };
+        });
+
+        root.querySelectorAll("[data-pwd]").forEach((btn) => {
+          btn.onclick = async () => {
+            const pwd = prompt("请输入新密码（至少 6 位）");
+            if (!pwd) return;
+            if (pwd.length < 6) {
+              toast("密码至少 6 位", "error");
+              return;
+            }
+            try {
+              await api("/api/auth/users/" + btn.dataset.pwd, {
+                method: "PATCH",
+                body: JSON.stringify({ password: pwd }),
+              });
+              toast("密码已重置", "success");
+            } catch (e) {
+              toast(e.message, "error");
+            }
+          };
+        });
+
+        document.getElementById("userModalOk").onclick = async () => {
+          try {
+            if (mode === "create") {
+              const body = {
+                username: document.getElementById("fUsername").value.trim(),
+                password: document.getElementById("fPassword").value,
+                display_name: document.getElementById("fDisplay").value.trim(),
+                role: document.getElementById("fRole").value,
+                unit: document.getElementById("fUnit").value.trim() || null,
+              };
+              if (!body.username || !body.password || !body.display_name) {
+                toast("请填写必填项", "error");
+                return;
+              }
+              await api("/api/auth/users", { method: "POST", body: JSON.stringify(body) });
+              toast("用户已创建", "success");
+            } else {
+              const uid = document.getElementById("editUserId").value;
+              const body = {
+                display_name: document.getElementById("fDisplay").value.trim(),
+                role: document.getElementById("fRole").value,
+                unit: document.getElementById("fUnit").value.trim() || null,
+                is_active: document.getElementById("fActive").value === "true",
+              };
+              await api("/api/auth/users/" + uid, {
+                method: "PATCH",
+                body: JSON.stringify(body),
+              });
+              toast("用户已更新", "success");
+            }
+            closeUm();
+            load();
           } catch (e) {
             toast(e.message, "error");
           }

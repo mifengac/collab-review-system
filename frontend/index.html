@@ -35,12 +35,31 @@
       root.innerHTML = `<p class="hint">加载中…</p>`;
       try {
         const data = await api("/api/items/dashboard");
+        const st = data.stats || {};
         root.innerHTML = `
           <div class="toolbar">
             <a class="btn btn-primary" href="/item_form.html">＋ 新建事项</a>
             <a class="btn" href="/items.html">全部事项</a>
           </div>
-          <div class="grid-3">
+          <div class="grid-3" style="grid-template-columns:repeat(4,1fr)">
+            <div class="stat-card">
+              <div class="label">全部进行中</div>
+              <div class="num">${st.in_progress ?? 0}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">即将逾期</div>
+              <div class="num">${st.overdue_soon ?? 0}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">已逾期</div>
+              <div class="num">${st.overdue ?? 0}</div>
+            </div>
+            <div class="stat-card">
+              <div class="label">今日定稿</div>
+              <div class="num">${st.finalized_today ?? 0}</div>
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:12px">
             <div class="stat-card">
               <div class="label">我的待办</div>
               <div class="num">${data.todo.length}</div>
@@ -50,7 +69,7 @@
               <div class="num">${data.my_created.length}</div>
             </div>
             <div class="stat-card">
-              <div class="label">即将逾期（3日内）</div>
+              <div class="label">即将逾期列表</div>
               <div class="num">${data.overdue_soon.length}</div>
             </div>
           </div>

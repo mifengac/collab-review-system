@@ -4,6 +4,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models import ActionLog, ActionType, Item, ItemStatus, User, UserRole
+from app.services.permissions import can_cancel_item
 
 
 class WorkflowError(Exception):
@@ -82,6 +83,7 @@ def approve_a(db: Session, item: Item, actor: User, comment: str | None) -> Item
     if item.status != ItemStatus.leader_a_review:
         raise WorkflowError(f"当前状态「{item.status.value}」不可执行 A 领导通过")
 
+    # 办公室/督办不得代批，除非本人就是指定 A 领导
     if not _is_admin(actor):
         if not item.leader_a_id or actor.id != item.leader_a_id:
             raise WorkflowError("仅该事项指定的 A 领导或管理员可通过", status_code=403)
@@ -154,8 +156,9 @@ def reject_b(db: Session, item: Item, actor: User, comment: str | None) -> Item:
 def archive(db: Session, item: Item, actor: User, comment: str | None) -> Item:
     if item.status != ItemStatus.finalized:
         raise WorkflowError("仅「已定稿」事项可归档")
-    if not _is_admin(actor) and actor.id not in {item.creator_id, item.handler_id, item.leader_b_id}:
-        raise WorkflowError("仅参与人或管理员可归档", status_code=403)
+    if not _is_admin(actor) and actor.role != UserRole.office_clerk:
+        if actor.id not in {item.creator_id, item.handler_id, item.leader_b_id}:
+            raise WorkflowError("仅参与人、办公室或管理员可归档", status_code=403)
     old = item.status
     item.status = ItemStatus.archived
     _log(db, item, actor, ActionType.archive, old, item.status, comment)
@@ -163,10 +166,12 @@ def archive(db: Session, item: Item, actor: User, comment: str | None) -> Item:
 
 
 def cancel(db: Session, item: Item, actor: User, comment: str | None) -> Item:
-    if item.status in (ItemStatus.archived, ItemStatus.cancelled):
+    if item.status in (ItemStatus.finalized, ItemStatus.archived, ItemStatus.cancelled):
         raise WorkflowError(f"当前状态「{item.status.value}」不可作废")
-    if not _is_admin(actor) and actor.id not in {item.creator_id, item.handler_id}:
-        raise WorkflowError("仅承办人、创建人或管理员可作废", status_code=403)
+    if not comment or not comment.strip():
+        raise WorkflowError("作废必须填写原因")
+    if not can_cancel_item(actor, item):
+        raise WorkflowError("仅管理员、办公室、创建人或承办人可作废", status_code=403)
     old = item.status
     item.status = ItemStatus.cancelled
     _log(db, item, actor, ActionType.cancel, old, item.status, comment)

@@ -21,6 +21,8 @@ from app.database import Base
 
 class UserRole(str, enum.Enum):
     admin = "admin"
+    office_clerk = "office_clerk"  # 办公室收文员/分派
+    supervisor = "supervisor"  # 督办人员
     handler = "handler"  # 承办人
     leader_a = "leader_a"  # A 领导
     leader_b = "leader_b"  # B 领导
@@ -54,6 +56,7 @@ class FileKind(str, enum.Enum):
 class ActionType(str, enum.Enum):
     create = "创建事项"
     update = "更新事项"
+    assign = "分派调整"
     upload = "上传文件"
     download = "下载文件"
     submit_a = "提交A领导审核"
@@ -64,6 +67,7 @@ class ActionType(str, enum.Enum):
     reject_b = "B领导退回"
     archive = "归档"
     cancel = "作废"
+    supervise = "督办催办"
     comment = "填写意见"
 
 

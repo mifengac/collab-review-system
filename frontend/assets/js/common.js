@@ -149,12 +149,28 @@ function escapeHtml(s) {
 function roleLabel(role) {
   const map = {
     admin: "管理员",
+    office_clerk: "办公室收文员",
+    supervisor: "督办人员",
     handler: "承办人",
     leader_a: "A领导",
     leader_b: "B领导",
     viewer: "只读",
   };
   return map[role] || role;
+}
+
+function isGlobalViewer(user) {
+  const r = (user || getUser() || {}).role;
+  return r === "admin" || r === "office_clerk" || r === "supervisor";
+}
+
+function isOfficeOrAdmin(user) {
+  const r = (user || getUser() || {}).role;
+  return r === "admin" || r === "office_clerk";
+}
+
+function isAdminUser(user) {
+  return (user || getUser() || {}).role === "admin";
 }
 
 function renderShell(active, title) {

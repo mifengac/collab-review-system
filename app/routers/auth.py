@@ -11,7 +11,14 @@ from app.auth import (
 )
 from app.database import get_db
 from app.models import User, UserRole
-from app.schemas import LoginRequest, TokenResponse, UserCreate, UserOut, UserUpdate
+from app.schemas import (
+    LoginRequest,
+    TokenResponse,
+    UserCreate,
+    UserOption,
+    UserOut,
+    UserUpdate,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -30,9 +37,25 @@ def me(user: CurrentUser):
     return user
 
 
+@router.get("/user-options", response_model=list[UserOption])
+def user_options(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
+    """新建/分派事项选人：所有登录用户可取启用中的人员精简列表。"""
+    return (
+        db.query(User)
+        .filter(User.is_active.is_(True))
+        .order_by(User.id)
+        .all()
+    )
+
+
 @router.get("/users", response_model=list[UserOut])
 def list_users(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    return db.query(User).filter(User.is_active.is_(True)).order_by(User.id).all()
+    """用户管理列表：管理员可见全部（含禁用）；办公室可见启用用户。"""
+    if user.role == UserRole.admin:
+        return db.query(User).order_by(User.id).all()
+    if user.role == UserRole.office_clerk:
+        return db.query(User).filter(User.is_active.is_(True)).order_by(User.id).all()
+    raise HTTPException(status_code=403, detail="无权查看用户管理列表，请使用选人接口")
 
 
 @router.post("/users", response_model=UserOut)

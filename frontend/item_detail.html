@@ -53,23 +53,32 @@
       const me = getUser() || {};
       const uid = me.id;
       const isAdmin = me.role === "admin";
+      const isOffice = me.role === "office_clerk" || isAdmin;
+      const isSuper = me.role === "supervisor" || isOffice;
       const isHandler = item.handler_id === uid || isAdmin;
       const isCreator = item.creator_id === uid || isAdmin;
       const isLeaderA = item.leader_a_id === uid || isAdmin;
       const isLeaderB = item.leader_b_id === uid || isAdmin;
+      const canEdit =
+        !["已定稿", "已归档", "已作废"].includes(s) &&
+        (isAdmin || me.role === "office_clerk" || item.handler_id === uid);
+      const canCancel =
+        !["已定稿", "已归档", "已作废"].includes(s) &&
+        (isAdmin || me.role === "office_clerk" || item.handler_id === uid || item.creator_id === uid);
+      const canAssign =
+        isOffice &&
+        !["已定稿", "已归档", "已作废"].includes(s);
       const locked = ["已定稿", "已归档", "已作废"].includes(s);
       const btns = [];
 
-      // 仅承办人/创建人/管理员在可提交状态显示
       if (
-        (isHandler || isCreator) &&
+        (item.handler_id === uid || item.creator_id === uid || isAdmin) &&
         ["承办中", "A领导退回", "B领导退回", "草稿"].includes(s)
       ) {
         btns.push(
           `<button class="btn btn-primary" type="button" data-act="submit-a">提交 A 领导审核</button>`
         );
       }
-      // 仅指定 A 领导 / 管理员
       if (s === "A领导审核中" && isLeaderA) {
         btns.push(
           `<button class="btn btn-success" type="button" data-act="approve-a">A 领导通过</button>`
@@ -78,7 +87,6 @@
           `<button class="btn btn-danger" type="button" data-act="reject-a">A 领导退回</button>`
         );
       }
-      // 仅指定 B 领导 / 管理员
       if (s === "B领导审核中" && isLeaderB) {
         btns.push(
           `<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`
@@ -87,14 +95,26 @@
           `<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`
         );
       }
-      if (s === "已定稿" && (isHandler || isCreator || isLeaderB || isAdmin)) {
+      if (canAssign) {
+        btns.push(`<button class="btn" type="button" id="btnAssign">分派/调整参与人</button>`);
+      }
+      if (isSuper) {
+        btns.push(`<button class="btn" type="button" data-act="supervise">督办催办</button>`);
+      }
+      if (
+        s === "已定稿" &&
+        (item.handler_id === uid ||
+          item.creator_id === uid ||
+          item.leader_b_id === uid ||
+          isAdmin ||
+          me.role === "office_clerk")
+      ) {
         btns.push(`<button class="btn" type="button" data-act="archive">归档</button>`);
       }
-      if (!["已归档", "已作废"].includes(s) && (isHandler || isCreator)) {
+      if (canCancel) {
         btns.push(`<button class="btn" type="button" data-act="cancel">作废</button>`);
       }
-      // 仅承办人/管理员可编辑
-      if (!locked && isHandler) {
+      if (canEdit) {
         btns.push(`<a class="btn" href="/item_form.html?id=${id}">编辑</a>`);
       }
       btns.push(`<a class="btn" href="/items.html">返回列表</a>`);
@@ -105,7 +125,11 @@
       const me = getUser() || {};
       const locked = ["已定稿", "已归档", "已作废"].includes(item.status);
       if (locked) return false;
-      return me.role === "admin" || item.handler_id === me.id;
+      return (
+        me.role === "admin" ||
+        me.role === "office_clerk" ||
+        item.handler_id === me.id
+      );
     }
 
     function renderMeta() {
@@ -263,12 +287,43 @@
             <div class="modal-bd">
               <div class="form-group">
                 <label>意见 <span class="req" id="commentReq" style="display:none">*</span></label>
-                <textarea id="modalComment" rows="4" placeholder="请填写审核意见（退回时必填）"></textarea>
+                <textarea id="modalComment" rows="4" placeholder="请填写意见（退回/作废/督办时必填）"></textarea>
               </div>
             </div>
             <div class="modal-ft">
               <button type="button" class="btn" id="modalCancel">取消</button>
               <button type="button" class="btn btn-primary" id="modalOk">确定</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-mask" id="assignMask">
+          <div class="modal" style="width:480px">
+            <div class="modal-hd">
+              <span>分派 / 调整参与人</span>
+              <button type="button" class="close" id="assignClose">&times;</button>
+            </div>
+            <div class="modal-bd">
+              <div class="form-group" style="margin-bottom:10px">
+                <label>承办人</label>
+                <select id="asHandler"></select>
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label>A 领导</label>
+                <select id="asLeaderA"></select>
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label>B 领导</label>
+                <select id="asLeaderB"></select>
+              </div>
+              <div class="form-group">
+                <label>分派说明</label>
+                <textarea id="asComment" rows="2" placeholder="可选"></textarea>
+              </div>
+              <p class="hint" style="margin-top:8px">A 审核中仅可调整 A 领导；B 审核中仅可调整 B 领导；终态不可调整。</p>
+            </div>
+            <div class="modal-ft">
+              <button type="button" class="btn" id="assignCancel">取消</button>
+              <button type="button" class="btn btn-primary" id="assignOk">确认分派</button>
             </div>
           </div>
         </div>
@@ -294,12 +349,28 @@
         finalize: { path: "/finalize", title: "B 领导定稿", require: false },
         "reject-b": { path: "/reject-b", title: "B 领导退回", require: true },
         archive: { path: "/archive", title: "归档", require: false },
-        cancel: { path: "/cancel", title: "作废", require: false },
+        cancel: { path: "/cancel", title: "作废", require: true },
       };
 
       root.querySelectorAll("[data-act]").forEach((btn) => {
         btn.onclick = () => {
-          const cfg = actMap[btn.dataset.act];
+          const act = btn.dataset.act;
+          if (act === "supervise") {
+            openModal(
+              "督办催办",
+              async (comment) => {
+                await api("/api/items/" + id + "/supervise", {
+                  method: "POST",
+                  body: JSON.stringify({ comment }),
+                });
+                toast("督办记录已写入", "success");
+                await reload();
+              },
+              true
+            );
+            return;
+          }
+          const cfg = actMap[act];
           if (!cfg) return;
           openModal(cfg.title, (comment) => wf(cfg.path, comment), cfg.require);
         };
@@ -317,6 +388,63 @@
         closeModal();
         try {
           await mask._onOk(comment);
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+
+      const btnAssign = document.getElementById("btnAssign");
+      if (btnAssign) {
+        btnAssign.onclick = async () => {
+          try {
+            const users = await api("/api/auth/user-options");
+            const opts =
+              `<option value="">请选择</option>` +
+              users
+                .map(
+                  (u) =>
+                    `<option value="${u.id}">${escapeHtml(u.display_name)}（${escapeHtml(
+                      u.username
+                    )}）</option>`
+                )
+                .join("");
+            document.getElementById("asHandler").innerHTML = opts;
+            document.getElementById("asLeaderA").innerHTML = opts;
+            document.getElementById("asLeaderB").innerHTML = opts;
+            if (item.handler_id) document.getElementById("asHandler").value = String(item.handler_id);
+            if (item.leader_a_id) document.getElementById("asLeaderA").value = String(item.leader_a_id);
+            if (item.leader_b_id) document.getElementById("asLeaderB").value = String(item.leader_b_id);
+            document.getElementById("asComment").value = "";
+            document.getElementById("assignMask").classList.add("show");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      }
+      const closeAssign = () => document.getElementById("assignMask").classList.remove("show");
+      document.getElementById("assignClose").onclick = closeAssign;
+      document.getElementById("assignCancel").onclick = closeAssign;
+      document.getElementById("assignOk").onclick = async () => {
+        const body = {
+          handler_id: document.getElementById("asHandler").value
+            ? Number(document.getElementById("asHandler").value)
+            : null,
+          leader_a_id: document.getElementById("asLeaderA").value
+            ? Number(document.getElementById("asLeaderA").value)
+            : null,
+          leader_b_id: document.getElementById("asLeaderB").value
+            ? Number(document.getElementById("asLeaderB").value)
+            : null,
+          comment: document.getElementById("asComment").value.trim() || null,
+        };
+        try {
+          await api("/api/items/" + id + "/assign", {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          closeAssign();
+          toast("分派已更新", "success");
+          await reload();
         } catch (e) {
           toast(e.message, "error");
         }

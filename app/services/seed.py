@@ -34,6 +34,8 @@ DEFAULT_TAGS = [
 
 # 演示用业务账号（密码统一 Demo@123456，仅 SEED_DEMO_USERS=true 时创建）
 DEMO_USERS = [
+    ("office1", "办公室赵六", UserRole.office_clerk, "办公室"),
+    ("supervisor1", "督办钱七", UserRole.supervisor, "办公室"),
     ("handler1", "承办员张三", UserRole.handler, "信息工作大队"),
     ("leader_a", "A领导李四", UserRole.leader_a, "信息工作大队"),
     ("leader_b", "B领导王五", UserRole.leader_b, "信息工作大队"),
