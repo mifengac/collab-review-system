@@ -291,23 +291,27 @@ HAR 中观察到的列表入口：
 - 说明主要接口：`/api/oa/items`、`/api/oa/stats`、`/api/oa/sync`、`/api/oa/items/{id}/create-collab`。
 - 说明第一版限制：不下载附件、不读正文、不回写 OA。
 
-## 7. 本轮：OA 同步诊断与模块级跟踪
+## 7. OA 同步：诊断、过期清理与安全
 
 ### 7.1 能力摘要
 
-- 新表 `oa_sync_logs`：记录每次 login/manual 同步的总体状态与五类模块明细。
-- 模块独立失败隔离：某一类公文接口异常不影响其他类成功数据入库。
-- 状态：`success` / `partial` / `failed`。
-- 接口：`GET /api/oa/sync-logs`（普通用户仅自己；管理员可看全部）。
-- 前端：公文池展示最近同步状态、分模块结果、同步记录区；密码仍用 modal，不写 storage。
+- 表 `oa_sync_logs`：login/manual 同步诊断。
+- 模块独立失败隔离；状态 success / partial / failed。
+- **`is_active` 当前有效记录**：列表/统计只显示 active。
+- **仅模块完整同步成功**（`success && complete && !truncated`）才停用本轮未出现的旧记录。
+- 失败/截断模块：**不停用**旧数据。
+- 已关联 `linked_item_id` 的记录只改 inactive，**不删事项**。
+- 启动时 `migrate_schema()` 幂等补齐旧库 `is_active`（无需删 collab.db）。
+- 手动同步入库异常：**先 rollback** 再写 failed 日志。
+- `sanitize_raw` 业务白名单 + 递归去敏感键；未知异常用通用中文；OA 路径不用 `logger.exception`。
 
-### 7.2 OASyncLog 字段
+### 7.2 模块 complete / truncated
 
-- `id`, `user_id`, `trigger`（login|manual）, `status`（success|partial|failed）
-- `imported`, `updated`, `total`
-- `module_results_json`（每模块：code/name/success/fetched/imported/updated/pages/error）
-- `error_summary`, `started_at`, `finished_at`, `created_at`
-- **禁止**写入密码、Cookie、Token、原始 OA 响应正文
+- 空列表成功 → complete=true（可清空该模块 active）
+- totalCount 存在：累计原始行数 >= totalCount → complete
+- 无 totalCount：本页 raw_count < page_size → complete
+- 达 max pages 未确认末页 → truncated=true, complete=false，**不清理**
+- 任意页失败 → success=false, complete=false，**不清理**
 
 ### 7.3 真实 OA 联调检查表（待内网验证）
 
@@ -315,20 +319,20 @@ HAR 中观察到的列表入口：
 
 1. 分别确认五类模块是否成功：todo / unread / done / read_done / running。
 2. 记录每类返回数量（与 OA 端肉眼核对）。
-3. 检查分页：`OA_SYNC_MAX_PAGES` 是否拉全；必要时加大页数后再测。
+3. 检查分页：`OA_SYNC_MAX_PAGES` 是否拉全；truncated 时前端提示未清理旧记录。
 4. 同一公文重复同步：只更新、不重复新增。
-5. 已创建协同事项的 `linked_item_id` 不被覆盖。
-6. 若某模块失败：记录模块名称、HTTP 状态、同步记录中的简短中文错误（**不要**把响应正文/HAR 提交到 GitHub）。
-7. 严禁提交：真实 OA 账号密码、Cookie、Token、完整响应、HAR。
-8. 若需调整 `OA_WORK_MODULES` 参数：必须以**内网最新 HAR** 为依据，并补充 mock 测试。
+5. 公文从待办到已办：待办列表不再显示，已办可见。
+6. 已创建协同事项的 `linked_item_id` 不被覆盖；inactive 后事项仍可访问。
+7. 若某模块失败：记录模块名称、HTTP 状态、同步记录短中文错误（勿提交响应/HAR）。
+8. 严禁提交：真实 OA 账号密码、Cookie、Token、完整响应、HAR。
+9. 调整 `OA_WORK_MODULES` 须以**内网最新 HAR** 为依据并补 mock 测试。
 
 ### 7.4 继续开发优先文件
 
-- `app/services/oa_client.py`：五类模块拉取与模块级错误隔离
-- `app/services/oa_sync.py`：入库 + 同步日志写入
-- `app/routers/oa.py`：`/sync`、`/sync-logs`
-- `app/routers/auth.py`：登录后自动同步与日志
-- `frontend/oa_items.html`：状态与同步记录展示
+- `app/services/oa_client.py` / `oa_sync.py` / `oa_auth.py`
+- `app/database.py`（`migrate_schema`）
+- `app/routers/oa.py` / `auth.py`
+- `frontend/oa_items.html`
 - `tests/test_oa_sync.py`
 
 ## 8. 后续路线建议
