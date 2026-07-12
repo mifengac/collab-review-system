@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     # 是否创建演示账号 handler1 / leader_a / leader_b（生产环境务必 false）
     seed_demo_users: bool = False
 
+    # 认证模式：local | oa | mixed
+    auth_mode: str = "local"
+
+    # OA 登录适配（仅占位，勿写入真实地址以外的敏感信息到仓库）
+    oa_base_url: str = ""
+    oa_login_path: str = "/hportal/j_security_check"
+    oa_profile_path: str = "/hportal/view/GetModuleTree.do"
+    oa_login_timeout_seconds: int = 8
+    oa_default_role: str = "viewer"
+    oa_verify_tls: bool = False
+    # 部分环境需先调 checkUserPKI / getUserNum，默认关闭
+    oa_precheck_enabled: bool = False
+    oa_pki_path: str = "/hportal/Login/checkUserPKI.jsp"
+    oa_user_num_path: str = "/hitem/api/getUserNum.jsp"
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
@@ -41,6 +56,17 @@ class Settings(BaseSettings):
     @property
     def upload_path(self) -> Path:
         return Path(self.upload_dir)
+
+    @property
+    def auth_mode_normalized(self) -> str:
+        mode = (self.auth_mode or "local").strip().lower()
+        if mode not in {"local", "oa", "mixed"}:
+            return "local"
+        return mode
+
+    @property
+    def oa_enabled(self) -> bool:
+        return self.auth_mode_normalized in {"oa", "mixed"}
 
 
 @lru_cache

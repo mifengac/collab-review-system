@@ -17,6 +17,7 @@ os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "Admin@123456"
 os.environ["DEBUG"] = "true"
+os.environ["AUTH_MODE"] = "local"
 os.environ["SEED_DEMO_USERS"] = "true"
 
 # 清除 settings 缓存后再导入应用

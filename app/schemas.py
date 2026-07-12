@@ -25,6 +25,12 @@ class TokenResponse(BaseModel):
     user: "UserOut"
 
 
+class AuthConfigOut(BaseModel):
+    auth_mode: str
+    oa_enabled: bool
+    title: str
+
+
 class UserOut(ORMModel):
     id: int
     username: str

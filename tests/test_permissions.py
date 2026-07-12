@@ -17,7 +17,9 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ADMIN_USERNAME", "admin")
 os.environ.setdefault("ADMIN_PASSWORD", "Admin@123456")
 os.environ.setdefault("DEBUG", "true")
+os.environ["AUTH_MODE"] = "local"
 os.environ["SEED_DEMO_USERS"] = "true"
+os.environ["AUTH_MODE"] = "local"
 
 from app.config import get_settings  # noqa: E402
 

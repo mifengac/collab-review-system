@@ -9,24 +9,24 @@
 <body class="login-page">
   <div class="login-card">
     <div class="login-head">
-      <h1>材料协同办理系统</h1>
-      <p>内网协同审核 · 替代纸质流转</p>
+      <h1 id="appTitle">材料协同办理系统</h1>
+      <p id="appSub">内网协同审核 · 替代纸质流转</p>
     </div>
     <div class="login-body">
       <div class="login-error" id="err"></div>
       <form id="loginForm">
         <div class="form-row">
-          <label for="username">用户名</label>
+          <label for="username" id="userLabel">用户名</label>
           <input id="username" name="username" autocomplete="username" required autofocus />
         </div>
         <div class="form-row">
           <label for="password">密码</label>
           <input id="password" name="password" type="password" autocomplete="current-password" required />
         </div>
-        <button type="submit" class="btn-login">登 录</button>
+        <button type="submit" class="btn-login" id="btnLogin">登 录</button>
       </form>
-      <div class="login-tip">
-        默认管理员账号见部署配置（.env）。演示账号仅在 SEED_DEMO_USERS=true 时创建：office1 / supervisor1 / handler1 / leader_a / leader_b，密码 Demo@123456。
+      <div class="login-tip" id="loginTip">
+        加载认证配置中…
       </div>
     </div>
   </div>
@@ -35,6 +35,41 @@
     if (getToken()) {
       location.href = "/index.html";
     }
+
+    let authMode = "local";
+
+    async function loadConfig() {
+      try {
+        const cfg = await api("/api/auth/config");
+        authMode = cfg.auth_mode || "local";
+        if (cfg.title) {
+          document.getElementById("appTitle").textContent = cfg.title;
+          document.title = "登录 - " + cfg.title;
+        }
+        const btn = document.getElementById("btnLogin");
+        const tip = document.getElementById("loginTip");
+        const userLabel = document.getElementById("userLabel");
+        if (authMode === "oa") {
+          btn.textContent = "使用 OA 账号登录";
+          userLabel.textContent = "OA 账号";
+          tip.textContent =
+            "当前为 OA 登录模式。身份由 OA 验证，本系统角色由管理员维护。勿在共享环境保存密码。";
+        } else if (authMode === "mixed") {
+          btn.textContent = "登 录";
+          userLabel.textContent = "OA / 本地用户名";
+          tip.textContent =
+            "当前为混合模式：优先 OA 登录。OA 不可用时仅本地管理员可维护登录。演示账号见部署配置。";
+        } else {
+          btn.textContent = "登 录";
+          tip.textContent =
+            "当前为本地登录。演示账号仅在 SEED_DEMO_USERS=true 时创建（office1 / supervisor1 / handler1 / leader_a / leader_b）。";
+        }
+      } catch (e) {
+        document.getElementById("loginTip").textContent =
+          "无法读取认证配置，将按本地登录尝试。";
+      }
+    }
+
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const err = document.getElementById("err");
@@ -53,6 +88,8 @@
         err.style.display = "block";
       }
     });
+
+    loadConfig();
   </script>
 </body>
 </html>

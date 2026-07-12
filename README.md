@@ -62,6 +62,52 @@ collab-review-system/
 - `SEED_DEMO_USERS` 默认 `false`，**仅用于本地演示**，生产环境务必关闭。
 - 密码均 bcrypt 哈希存储。请勿写入真实 OA 账号/cookie/token。
 
+## OA 登录适配
+
+本系统可将 **身份验证** 委托给内网 OA；**角色、权限、事项流转、文件权限** 仍由本系统管理。
+
+### 认证模式 `AUTH_MODE`
+
+| 模式 | 行为 |
+|------|------|
+| `local`（默认） | 仅本系统 `users` 表账号密码，行为与原先一致 |
+| `oa` | 仅 OA 账号密码；成功后同步/创建本地用户并发本系统 JWT |
+| `mixed` | 优先 OA；**OA 服务不可用**时仅允许本地 **admin** 登录维护；普通用户不本地回落 |
+
+### 相关配置（`.env.example` 占位）
+
+```env
+AUTH_MODE=local
+OA_BASE_URL=http://your-oa-host.example
+OA_LOGIN_PATH=/hportal/j_security_check
+OA_PROFILE_PATH=/hportal/view/GetModuleTree.do
+OA_LOGIN_TIMEOUT_SECONDS=8
+OA_DEFAULT_ROLE=viewer
+OA_VERIFY_TLS=false
+OA_PRECHECK_ENABLED=false
+```
+
+### 登录流程（OA / mixed）
+
+1. 用户提交账号密码到 `POST /api/auth/login`。  
+2. 服务端用内存中的 HTTP Session 调用 OA：  
+   - `POST {OA_BASE_URL}{OA_LOGIN_PATH}`，表单字段 `j_username` / `j_password` / `remember`  
+   - 可选预检（`OA_PRECHECK_ENABLED`）：`checkUserPKI.jsp`、`getUserNum.jsp`  
+   - `POST {OA_PROFILE_PATH}` 解析 `userInfo`（userCode / userName / departmentName 等）  
+3. **不保存** OA 密码、cookie、token；会话 cookie 仅存在于该次请求过程。  
+4. 按 `userCode` 查找本地用户：  
+   - 已存在：更新显示名、单位；**不覆盖**本系统 `role`；`is_active=false` 拒绝登录  
+   - 不存在：创建本地用户，`role=OA_DEFAULT_ROLE`（默认 `viewer`），`password_hash` 为随机值（不可用 OA 密码做本地登录）  
+5. 签发本系统 JWT。管理员再在「系统设置」中把用户改为 `handler` / `office_clerk` / 领导等。
+
+### 安全与限制
+
+- **严禁**将真实 OA 账号、密码、cookie、token、HAR 抓包提交到仓库。  
+- 日志只记录状态码等元信息，**不打印**密码与 Cookie。  
+- 若 OA 强制 PKI/UKey/图形验证码且无法账号密码直登，本适配不可用，需接官方 SSO。  
+- 首次启用 OA 建议使用 **`mixed`**，确保管理员在 OA 故障时仍能进系统改角色。  
+- `GET /api/auth/config` 可返回当前 `auth_mode` / `oa_enabled` 供登录页展示。
+
 ## 角色与权限
 
 | 角色 | 查看范围 | 新建/编辑/上传 | 分派 | 审批 | 督办 | 用户管理 |
@@ -253,7 +299,8 @@ DATABASE_URL=postgresql://user:password@host:54321/collab_review
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/auth/login` | 登录 |
+| POST | `/api/auth/login` | 登录（local / oa / mixed） |
+| GET | `/api/auth/config` | 认证模式（登录页） |
 | GET | `/api/auth/me` | 当前用户 |
 | GET | `/api/auth/user-options` | 选人列表（登录即可） |
 | GET/POST/PATCH | `/api/auth/users` | 用户管理（创建/改仅 admin） |
