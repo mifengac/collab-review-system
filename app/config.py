@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     upload_dir: str = str(BASE_DIR / "uploads")
     debug: bool = False
 
+    # 是否创建演示账号 handler1 / leader_a / leader_b（生产环境务必 false）
+    seed_demo_users: bool = False
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

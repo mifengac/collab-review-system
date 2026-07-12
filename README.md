@@ -53,11 +53,20 @@ collab-review-system/
 | 用户名 | 默认密码 | 角色 | 说明 |
 |--------|----------|------|------|
 | `admin` | `Admin@123456` | 管理员 | 可通过 `.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 修改（仅首次初始化生效） |
-| `handler1` | `Demo@123456` | 承办人 | 演示账号 |
-| `leader_a` | `Demo@123456` | A 领导 | 演示账号 |
-| `leader_b` | `Demo@123456` | B 领导 | 演示账号 |
+| `handler1` | `Demo@123456` | 承办人 | **仅当** `SEED_DEMO_USERS=true` 时创建 |
+| `leader_a` | `Demo@123456` | A 领导 | **仅当** `SEED_DEMO_USERS=true` 时创建 |
+| `leader_b` | `Demo@123456` | B 领导 | **仅当** `SEED_DEMO_USERS=true` 时创建 |
 
-密码均以 bcrypt 哈希写入数据库，**不落明文**。请勿将真实 OA 账号/cookie/token 写入仓库。
+- `SEED_DEMO_USERS` 默认 `false`（生产环境勿开启）。
+- 密码均以 bcrypt 哈希写入数据库，**不落明文**。请勿将真实 OA 账号/cookie/token 写入仓库。
+
+## 权限说明（事项级）
+
+- **管理员**：可查看/管理全部事项。
+- **非管理员**：仅可看到自己创建、承办，或作为 A/B 领导参与的事项。
+- **编辑 / 上传**：仅承办人或管理员；已定稿、已归档、已作废不可编辑或上传。
+- **下载**：须具备该事项查看权限。
+- **A/B 审核**：非管理员必须是事项上指定的 `leader_a_id` / `leader_b_id`；未指定领导时不可提交/通过到下一节点。
 
 ## 本地运行
 
@@ -98,11 +107,18 @@ pytest -q
 cd collab-review-system
 cp .env.example .env
 # 务必修改 SECRET_KEY 与 ADMIN_PASSWORD
+# docker-compose.yml 通过 env_file: .env 读取该文件；environment 中的默认值作兜底
 
 docker compose up -d --build
 ```
 
 访问：http://服务器IP:5009/login.html
+
+说明：
+
+- `docker-compose.yml` 已启用 `env_file: .env`，请先复制 `.env.example` 再启动。
+- 同名变量优先级：compose `environment` 插值 / 宿主机环境变量 与 `env_file` 共同注入容器；请在 `.env` 中配置生产密钥。
+- `SEED_DEMO_USERS` 生产请保持 `false`。
 
 数据与上传文件使用命名卷：
 

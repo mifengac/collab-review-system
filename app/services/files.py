@@ -29,6 +29,28 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def validate_file_content(ext: str, raw: bytes) -> None:
+    """轻量魔数校验：内容与扩展名须匹配。"""
+    ext = ext.lower()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    if ext in {".docx", ".xlsx"}:
+        # OOXML 为 ZIP 包，以 PK 开头
+        if not raw.startswith(b"PK"):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+    elif ext == ".pdf":
+        if not raw.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+    elif ext in {".jpg", ".jpeg"}:
+        # JPEG SOI
+        if not raw.startswith(b"\xff\xd8\xff"):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+    elif ext == ".png":
+        if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+
+
 def ensure_upload_dir() -> Path:
     settings = get_settings()
     path = settings.upload_path
@@ -61,6 +83,8 @@ async def save_upload(
         raise HTTPException(status_code=400, detail="文件为空")
     if len(raw) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="文件超过 50MB 限制")
+
+    validate_file_content(ext, raw)
 
     sha = _sha256_bytes(raw)
     original = _safe_name(file.filename)

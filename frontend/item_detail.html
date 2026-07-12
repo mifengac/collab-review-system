@@ -50,29 +50,62 @@
 
     function actionBar() {
       const s = item.status;
+      const me = getUser() || {};
+      const uid = me.id;
+      const isAdmin = me.role === "admin";
+      const isHandler = item.handler_id === uid || isAdmin;
+      const isCreator = item.creator_id === uid || isAdmin;
+      const isLeaderA = item.leader_a_id === uid || isAdmin;
+      const isLeaderB = item.leader_b_id === uid || isAdmin;
+      const locked = ["已定稿", "已归档", "已作废"].includes(s);
       const btns = [];
-      if (["承办中", "A领导退回", "B领导退回", "草稿"].includes(s)) {
-        btns.push(`<button class="btn btn-primary" type="button" data-act="submit-a">提交 A 领导审核</button>`);
+
+      // 仅承办人/创建人/管理员在可提交状态显示
+      if (
+        (isHandler || isCreator) &&
+        ["承办中", "A领导退回", "B领导退回", "草稿"].includes(s)
+      ) {
+        btns.push(
+          `<button class="btn btn-primary" type="button" data-act="submit-a">提交 A 领导审核</button>`
+        );
       }
-      if (s === "A领导审核中") {
-        btns.push(`<button class="btn btn-success" type="button" data-act="approve-a">A 领导通过</button>`);
-        btns.push(`<button class="btn btn-danger" type="button" data-act="reject-a">A 领导退回</button>`);
+      // 仅指定 A 领导 / 管理员
+      if (s === "A领导审核中" && isLeaderA) {
+        btns.push(
+          `<button class="btn btn-success" type="button" data-act="approve-a">A 领导通过</button>`
+        );
+        btns.push(
+          `<button class="btn btn-danger" type="button" data-act="reject-a">A 领导退回</button>`
+        );
       }
-      if (s === "B领导审核中") {
-        btns.push(`<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`);
-        btns.push(`<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`);
+      // 仅指定 B 领导 / 管理员
+      if (s === "B领导审核中" && isLeaderB) {
+        btns.push(
+          `<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`
+        );
+        btns.push(
+          `<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`
+        );
       }
-      if (s === "已定稿") {
+      if (s === "已定稿" && (isHandler || isCreator || isLeaderB || isAdmin)) {
         btns.push(`<button class="btn" type="button" data-act="archive">归档</button>`);
       }
-      if (!["已归档", "已作废"].includes(s)) {
+      if (!["已归档", "已作废"].includes(s) && (isHandler || isCreator)) {
         btns.push(`<button class="btn" type="button" data-act="cancel">作废</button>`);
       }
-      if (!["已定稿", "已归档", "已作废"].includes(s)) {
+      // 仅承办人/管理员可编辑
+      if (!locked && isHandler) {
         btns.push(`<a class="btn" href="/item_form.html?id=${id}">编辑</a>`);
       }
       btns.push(`<a class="btn" href="/items.html">返回列表</a>`);
       return btns.join(" ");
+    }
+
+    function canUpload() {
+      const me = getUser() || {};
+      const locked = ["已定稿", "已归档", "已作废"].includes(item.status);
+      if (locked) return false;
+      return me.role === "admin" || item.handler_id === me.id;
     }
 
     function renderMeta() {
@@ -190,7 +223,9 @@
           <button type="button" data-tab="flow">流转时间线</button>
         </div>
         <div class="tab-pane active" id="pane-files">
-          <div class="panel">
+          ${
+            canUpload()
+              ? `<div class="panel">
             <div class="panel-hd">上传文件</div>
             <div class="panel-bd">
               <div class="upload-row">
@@ -207,7 +242,9 @@
               </div>
               <p class="hint">主材料限 docx；附件支持 docx / xlsx / pdf / jpg / png。每次上传均新增版本，历史不可覆盖。</p>
             </div>
-          </div>
+          </div>`
+              : `<div class="panel"><div class="panel-bd"><p class="hint">当前状态或权限下不可上传文件（仅承办人/管理员，且事项未定稿/归档/作废）。</p></div></div>`
+          }
           <div id="docList">${renderDocs()}</div>
         </div>
         <div class="tab-pane" id="pane-flow">
@@ -286,28 +323,31 @@
       };
 
       const fi = document.getElementById("fileInput");
-      fi.onchange = () => {
-        document.getElementById("fileNameHint").textContent = fi.files[0]
-          ? fi.files[0].name
-          : "";
-      };
+      const btnUpload = document.getElementById("btnUpload");
+      if (fi && btnUpload) {
+        fi.onchange = () => {
+          document.getElementById("fileNameHint").textContent = fi.files[0]
+            ? fi.files[0].name
+            : "";
+        };
 
-      document.getElementById("btnUpload").onclick = async () => {
-        if (!fi.files[0]) {
-          toast("请先选择文件", "error");
-          return;
-        }
-        const fd = new FormData();
-        fd.append("file", fi.files[0]);
-        fd.append("kind", document.getElementById("fileKind").value);
-        try {
-          await api("/api/items/" + id + "/upload", { method: "POST", body: fd });
-          toast("上传成功，已生成新版本", "success");
-          await reload();
-        } catch (e) {
-          toast(e.message, "error");
-        }
-      };
+        btnUpload.onclick = async () => {
+          if (!fi.files[0]) {
+            toast("请先选择文件", "error");
+            return;
+          }
+          const fd = new FormData();
+          fd.append("file", fi.files[0]);
+          fd.append("kind", document.getElementById("fileKind").value);
+          try {
+            await api("/api/items/" + id + "/upload", { method: "POST", body: fd });
+            toast("上传成功，已生成新版本", "success");
+            await reload();
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      }
 
       root.querySelectorAll("[data-dl]").forEach((btn) => {
         btn.onclick = async () => {

@@ -14,10 +14,14 @@ from app.schemas import (
     ItemCreate,
     ItemDetail,
     ItemUpdate,
-    MessageOut,
     WorkflowAction,
 )
 from app.services import workflow
+from app.services.permissions import (
+    ensure_can_edit_item,
+    ensure_can_view_item,
+    item_scope_filter,
+)
 from app.services.workflow import WorkflowError, write_log
 
 router = APIRouter(prefix="/api/items", tags=["协同事项"])
@@ -42,12 +46,14 @@ def _get_item(db: Session, item_id: int) -> Item:
 
 @router.get("/dashboard", response_model=DashboardOut)
 def dashboard(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    q = db.query(Item)
+    scope = item_scope_filter(user)
+    base = db.query(Item)
+    if scope is not None:
+        base = base.filter(scope)
 
-    # 待办：按角色
-    todo_q = q
+    # 待办：按角色 + 事项范围
     if user.role.value == "handler":
-        todo_q = todo_q.filter(
+        todo_q = base.filter(
             Item.handler_id == user.id,
             Item.status.in_(
                 [
@@ -59,18 +65,18 @@ def dashboard(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
             ),
         )
     elif user.role.value == "leader_a":
-        todo_q = todo_q.filter(
+        todo_q = base.filter(
             Item.leader_a_id == user.id,
             Item.status == ItemStatus.leader_a_review,
         )
     elif user.role.value == "leader_b":
-        todo_q = todo_q.filter(
+        todo_q = base.filter(
             Item.leader_b_id == user.id,
             Item.status == ItemStatus.leader_b_review,
         )
     else:
-        # admin: 所有进行中
-        todo_q = todo_q.filter(
+        # admin / 其他：范围内进行中
+        todo_q = base.filter(
             Item.status.in_(
                 [
                     ItemStatus.draft,
@@ -92,17 +98,12 @@ def dashboard(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
         .all()
     )
     soon = datetime.utcnow() + timedelta(days=3)
-    overdue_soon = (
-        db.query(Item)
-        .filter(
-            Item.deadline.isnot(None),
-            Item.deadline <= soon,
-            Item.status.notin_([ItemStatus.finalized, ItemStatus.archived, ItemStatus.cancelled]),
-        )
-        .order_by(Item.deadline.asc())
-        .limit(50)
-        .all()
+    overdue_q = base.filter(
+        Item.deadline.isnot(None),
+        Item.deadline <= soon,
+        Item.status.notin_([ItemStatus.finalized, ItemStatus.archived, ItemStatus.cancelled]),
     )
+    overdue_soon = overdue_q.order_by(Item.deadline.asc()).limit(50).all()
     return DashboardOut(
         todo=[ItemBrief.model_validate(i) for i in todo],
         my_created=[ItemBrief.model_validate(i) for i in my_created],
@@ -119,6 +120,9 @@ def list_items(
     limit: int = Query(100, le=500),
 ):
     q = db.query(Item)
+    scope = item_scope_filter(user)
+    if scope is not None:
+        q = q.filter(scope)
     if status:
         q = q.filter(Item.status == status)
     if keyword:
@@ -165,7 +169,9 @@ def create_item(
 
 @router.get("/{item_id}", response_model=ItemDetail)
 def get_item(item_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    return _get_item(db, item_id)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return item
 
 
 @router.put("/{item_id}", response_model=ItemDetail)
@@ -176,8 +182,7 @@ def update_item(
     db: Annotated[Session, Depends(get_db)],
 ):
     item = _get_item(db, item_id)
-    if item.status in (ItemStatus.finalized, ItemStatus.archived, ItemStatus.cancelled):
-        raise HTTPException(status_code=400, detail="已定稿/归档/作废的事项不可编辑")
+    ensure_can_edit_item(user, item)
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(item, k, v)
@@ -188,7 +193,8 @@ def update_item(
 
 @router.get("/{item_id}/timeline", response_model=list[ActionLogOut])
 def timeline(item_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    _get_item(db, item_id)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
     logs = (
         db.query(ActionLog)
         .options(joinedload(ActionLog.actor))
@@ -205,7 +211,7 @@ def _run_wf(fn, db: Session, item: Item, user, body: WorkflowAction):
         db.commit()
     except WorkflowError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=e.message) from e
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
     return _get_item(db, item.id)
 
 
@@ -216,7 +222,9 @@ def api_submit_a(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.submit_to_a, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.submit_to_a, db, item, user, body)
 
 
 @router.post("/{item_id}/approve-a", response_model=ItemDetail)
@@ -226,7 +234,9 @@ def api_approve_a(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.approve_a, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.approve_a, db, item, user, body)
 
 
 @router.post("/{item_id}/reject-a", response_model=ItemDetail)
@@ -236,7 +246,9 @@ def api_reject_a(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.reject_a, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.reject_a, db, item, user, body)
 
 
 @router.post("/{item_id}/finalize", response_model=ItemDetail)
@@ -246,7 +258,9 @@ def api_finalize(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.finalize_b, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.finalize_b, db, item, user, body)
 
 
 @router.post("/{item_id}/reject-b", response_model=ItemDetail)
@@ -256,7 +270,9 @@ def api_reject_b(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.reject_b, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.reject_b, db, item, user, body)
 
 
 @router.post("/{item_id}/archive", response_model=ItemDetail)
@@ -266,7 +282,9 @@ def api_archive(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.archive, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.archive, db, item, user, body)
 
 
 @router.post("/{item_id}/cancel", response_model=ItemDetail)
@@ -276,4 +294,6 @@ def api_cancel(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ):
-    return _run_wf(workflow.cancel, db, _get_item(db, item_id), user, body)
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    return _run_wf(workflow.cancel, db, item, user, body)

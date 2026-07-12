@@ -3,19 +3,18 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models import ActionLog, ActionType, Item, ItemStatus, User
+from app.models import ActionLog, ActionType, Item, ItemStatus, User, UserRole
 
 
 class WorkflowError(Exception):
-    def __init__(self, message: str):
+    def __init__(self, message: str, status_code: int = 400):
         self.message = message
+        self.status_code = status_code
         super().__init__(message)
 
 
-# 允许的状态迁移
-TRANSITIONS: dict[str, tuple[ItemStatus, ItemStatus, ActionType]] = {
-    # action_key -> (from_or_any, to, action_type)  用函数校验 from
-}
+def _is_admin(actor: User) -> bool:
+    return actor.role == UserRole.admin
 
 
 def _log(
@@ -55,7 +54,7 @@ def write_log(
 
 
 def submit_to_a(db: Session, item: Item, actor: User, comment: str | None) -> Item:
-    """承办人提交给 A 领导。"""
+    """承办人 / 创建人 / 管理员 提交给 A 领导。"""
     allowed = {
         ItemStatus.draft,
         ItemStatus.handling,
@@ -64,10 +63,13 @@ def submit_to_a(db: Session, item: Item, actor: User, comment: str | None) -> It
     }
     if item.status not in allowed:
         raise WorkflowError(f"当前状态「{item.status.value}」不可提交 A 领导审核")
-    if item.handler_id and actor.id != item.handler_id and actor.role.value != "admin":
-        # 创建人也可提交
-        if actor.id != item.creator_id:
-            raise WorkflowError("仅承办人或管理员可提交审核")
+
+    if not _is_admin(actor):
+        if actor.id not in {item.handler_id, item.creator_id}:
+            raise WorkflowError("仅承办人、创建人或管理员可提交审核", status_code=403)
+
+    if not item.leader_a_id:
+        raise WorkflowError("事项未指定 A 领导，请先补齐后再提交审核")
 
     old = item.status
     item.status = ItemStatus.leader_a_review
@@ -76,17 +78,29 @@ def submit_to_a(db: Session, item: Item, actor: User, comment: str | None) -> It
 
 
 def approve_a(db: Session, item: Item, actor: User, comment: str | None) -> Item:
-    """A 领导通过，进入 B 领导审核。"""
+    """指定 A 领导或管理员通过，进入 B 领导审核。"""
     if item.status != ItemStatus.leader_a_review:
         raise WorkflowError(f"当前状态「{item.status.value}」不可执行 A 领导通过")
-    if item.leader_a_id and actor.id != item.leader_a_id and actor.role.value not in ("admin", "leader_a"):
-        raise WorkflowError("仅指定 A 领导或管理员可通过")
+
+    if not _is_admin(actor):
+        if not item.leader_a_id or actor.id != item.leader_a_id:
+            raise WorkflowError("仅该事项指定的 A 领导或管理员可通过", status_code=403)
+
+    if not item.leader_b_id:
+        raise WorkflowError("事项未指定 B 领导，请先补齐后再提交 B 领导审核")
 
     old = item.status
     item.status = ItemStatus.leader_b_review
     _log(db, item, actor, ActionType.approve_a, old, item.status, comment)
-    # 同时记录提交 B 的流转
-    _log(db, item, actor, ActionType.submit_b, ItemStatus.leader_a_review, item.status, "A领导通过后自动提交B领导")
+    _log(
+        db,
+        item,
+        actor,
+        ActionType.submit_b,
+        ItemStatus.leader_a_review,
+        item.status,
+        "A领导通过后自动提交B领导",
+    )
     return item
 
 
@@ -95,8 +109,10 @@ def reject_a(db: Session, item: Item, actor: User, comment: str | None) -> Item:
         raise WorkflowError(f"当前状态「{item.status.value}」不可执行 A 领导退回")
     if not comment or not comment.strip():
         raise WorkflowError("退回必须填写意见")
-    if item.leader_a_id and actor.id != item.leader_a_id and actor.role.value not in ("admin", "leader_a"):
-        raise WorkflowError("仅指定 A 领导或管理员可退回")
+
+    if not _is_admin(actor):
+        if not item.leader_a_id or actor.id != item.leader_a_id:
+            raise WorkflowError("仅该事项指定的 A 领导或管理员可退回", status_code=403)
 
     old = item.status
     item.status = ItemStatus.leader_a_rejected
@@ -105,11 +121,13 @@ def reject_a(db: Session, item: Item, actor: User, comment: str | None) -> Item:
 
 
 def finalize_b(db: Session, item: Item, actor: User, comment: str | None) -> Item:
-    """B 领导定稿。"""
+    """指定 B 领导或管理员定稿。"""
     if item.status != ItemStatus.leader_b_review:
         raise WorkflowError(f"当前状态「{item.status.value}」不可定稿")
-    if item.leader_b_id and actor.id != item.leader_b_id and actor.role.value not in ("admin", "leader_b"):
-        raise WorkflowError("仅指定 B 领导或管理员可定稿")
+
+    if not _is_admin(actor):
+        if not item.leader_b_id or actor.id != item.leader_b_id:
+            raise WorkflowError("仅该事项指定的 B 领导或管理员可定稿", status_code=403)
 
     old = item.status
     item.status = ItemStatus.finalized
@@ -122,8 +140,10 @@ def reject_b(db: Session, item: Item, actor: User, comment: str | None) -> Item:
         raise WorkflowError(f"当前状态「{item.status.value}」不可执行 B 领导退回")
     if not comment or not comment.strip():
         raise WorkflowError("退回必须填写意见")
-    if item.leader_b_id and actor.id != item.leader_b_id and actor.role.value not in ("admin", "leader_b"):
-        raise WorkflowError("仅指定 B 领导或管理员可退回")
+
+    if not _is_admin(actor):
+        if not item.leader_b_id or actor.id != item.leader_b_id:
+            raise WorkflowError("仅该事项指定的 B 领导或管理员可退回", status_code=403)
 
     old = item.status
     item.status = ItemStatus.leader_b_rejected
@@ -134,6 +154,8 @@ def reject_b(db: Session, item: Item, actor: User, comment: str | None) -> Item:
 def archive(db: Session, item: Item, actor: User, comment: str | None) -> Item:
     if item.status != ItemStatus.finalized:
         raise WorkflowError("仅「已定稿」事项可归档")
+    if not _is_admin(actor) and actor.id not in {item.creator_id, item.handler_id, item.leader_b_id}:
+        raise WorkflowError("仅参与人或管理员可归档", status_code=403)
     old = item.status
     item.status = ItemStatus.archived
     _log(db, item, actor, ActionType.archive, old, item.status, comment)
@@ -143,6 +165,8 @@ def archive(db: Session, item: Item, actor: User, comment: str | None) -> Item:
 def cancel(db: Session, item: Item, actor: User, comment: str | None) -> Item:
     if item.status in (ItemStatus.archived, ItemStatus.cancelled):
         raise WorkflowError(f"当前状态「{item.status.value}」不可作废")
+    if not _is_admin(actor) and actor.id not in {item.creator_id, item.handler_id}:
+        raise WorkflowError("仅承办人、创建人或管理员可作废", status_code=403)
     old = item.status
     item.status = ItemStatus.cancelled
     _log(db, item, actor, ActionType.cancel, old, item.status, comment)

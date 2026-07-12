@@ -9,6 +9,11 @@ from app.database import get_db
 from app.models import ActionType, Document, FileKind, FileVersion, Item
 from app.schemas import DocumentOut, EditorConfigOut, FileVersionOut, MessageOut
 from app.services.files import resolve_file_path, save_upload
+from app.services.permissions import (
+    ensure_can_download_document,
+    ensure_can_upload_document,
+    ensure_can_view_item,
+)
 from app.services.workflow import write_log
 
 router = APIRouter(prefix="/api", tags=["文件与文档"])
@@ -23,6 +28,7 @@ def list_documents(
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="事项不存在")
+    ensure_can_view_item(user, item)
     docs = (
         db.query(Document)
         .options(
@@ -48,13 +54,13 @@ async def upload_file(
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="事项不存在")
+    ensure_can_upload_document(user, item)
     if kind not in ("main", "attachment"):
         raise HTTPException(status_code=400, detail="kind 须为 main 或 attachment")
     file_kind = FileKind.main if kind == "main" else FileKind.attachment
     doc, _ver = await save_upload(
         db, item, user, file, file_kind, document_id=document_id, document_name=document_name
     )
-    # 重新加载含 versions
     doc = (
         db.query(Document)
         .options(joinedload(Document.versions).joinedload(FileVersion.uploader))
@@ -79,6 +85,9 @@ def download_version(
     if not ver:
         raise HTTPException(status_code=404, detail="版本不存在")
     item = db.query(Item).filter(Item.id == ver.document.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    ensure_can_download_document(user, item)
     path = resolve_file_path(ver)
     write_log(
         db,
@@ -104,6 +113,10 @@ def list_versions(
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    item = db.query(Item).filter(Item.id == doc.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    ensure_can_view_item(user, item)
     vers = (
         db.query(FileVersion)
         .options(joinedload(FileVersion.uploader))
@@ -124,6 +137,10 @@ def editor_config(
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
+    item = db.query(Item).filter(Item.id == doc.item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="事项不存在")
+    ensure_can_view_item(user, item)
     return EditorConfigOut(
         document_id=document_id,
         mode="view",
@@ -154,6 +171,5 @@ async def office_callback(
     """ONLYOFFICE 回调预留：第一版仅返回 ok，不落库。"""
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
-        # ONLYOFFICE 期望特定响应，MVP 统一返回
         return MessageOut(message="document not found (reserved)", detail={"error": 1})
     return MessageOut(message="ok", detail={"error": 0, "reserved": True})

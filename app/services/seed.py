@@ -32,7 +32,7 @@ DEFAULT_TAGS = [
     "涉枪涉爆",
 ]
 
-# 演示用业务账号（密码统一 Demo@123456，仅本地演示）
+# 演示用业务账号（密码统一 Demo@123456，仅 SEED_DEMO_USERS=true 时创建）
 DEMO_USERS = [
     ("handler1", "承办员张三", UserRole.handler, "信息工作大队"),
     ("leader_a", "A领导李四", UserRole.leader_a, "信息工作大队"),
@@ -63,16 +63,17 @@ def seed_all(db: Session) -> None:
             )
         )
 
-    for username, display_name, role, unit in DEMO_USERS:
-        if not db.query(User).filter(User.username == username).first():
-            db.add(
-                User(
-                    username=username,
-                    password_hash=hash_password("Demo@123456"),
-                    display_name=display_name,
-                    role=role,
-                    unit=unit,
+    if settings.seed_demo_users:
+        for username, display_name, role, unit in DEMO_USERS:
+            if not db.query(User).filter(User.username == username).first():
+                db.add(
+                    User(
+                        username=username,
+                        password_hash=hash_password("Demo@123456"),
+                        display_name=display_name,
+                        role=role,
+                        unit=unit,
+                    )
                 )
-            )
 
     db.commit()
