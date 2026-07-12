@@ -180,7 +180,8 @@ def authenticate_oa_user(username: str, password: str) -> OAUserProfile:
     except httpx.RequestError as exc:
         raise OAAuthUnavailable("无法连接 OA 服务") from exc
     except Exception as exc:
-        logger.exception("OA auth unexpected error: %s", type(exc).__name__)
+        # 不使用 logger.exception，避免堆栈/异常文本含敏感信息
+        logger.warning("OA auth unexpected error type=%s", type(exc).__name__)
         raise OAAuthUnavailable("OA 认证过程发生异常") from exc
 
 
@@ -194,10 +195,8 @@ def authenticate_and_fetch_oa(
     同一会话内登录并拉取公文列表。
     返回 (profile, report: OAFetchReport)。
     模块级失败记入 report，不导致登录失败；cookie 仅在 with 块内存在。
-
-    兼容：第三项仍可通过 report.error_summary 获取简要错误。
     """
-    from app.services.oa_client import OAFetchReport, fetch_oa_work_items_report
+    from app.services.oa_client import OAFetchReport, fetch_oa_work_items_report, safe_error_text
 
     try:
         with _open_oa_client() as client:
@@ -208,17 +207,15 @@ def authenticate_and_fetch_oa(
                 )
                 return profile, report
             except Exception as exc:
-                # 整次拉取异常（非模块隔离内）
-                msg = getattr(exc, "message", None) or "OA 列表同步失败"
-                msg = str(msg).strip()
-                if len(msg) > 120:
-                    msg = msg[:120] + "…"
-                logger.info("OA fetch after login failed: %s", type(exc).__name__)
+                logger.info("OA fetch after login failed type=%s", type(exc).__name__)
                 report = OAFetchReport(
                     items=[],
                     module_results=[],
                     status="failed",
-                    error_summary=msg,
+                    error_summary=safe_error_text(
+                        exc if isinstance(exc, (OAAuthError, OAAuthUnavailable)) else None,
+                        default="OA 列表同步失败",
+                    ),
                 )
                 return profile, report
     except (OAAuthError, OAAuthUnavailable):
@@ -228,5 +225,5 @@ def authenticate_and_fetch_oa(
     except httpx.RequestError as exc:
         raise OAAuthUnavailable("无法连接 OA 服务") from exc
     except Exception as exc:
-        logger.exception("OA auth+fetch unexpected error: %s", type(exc).__name__)
+        logger.warning("OA auth+fetch unexpected error type=%s", type(exc).__name__)
         raise OAAuthUnavailable("OA 认证过程发生异常") from exc

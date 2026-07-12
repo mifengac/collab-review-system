@@ -76,6 +76,9 @@ def _parse_module_results(raw_json: str | None) -> list[OAModuleResultOut]:
                     pages=int(m.get("pages") or 0),
                     imported=int(m.get("imported") or 0),
                     updated=int(m.get("updated") or 0),
+                    deactivated=int(m.get("deactivated") or 0),
+                    complete=bool(m.get("complete")),
+                    truncated=bool(m.get("truncated")),
                     error=m.get("error"),
                 )
             )
@@ -109,8 +112,11 @@ def list_oa_items(
     keyword: str | None = None,
     limit: int = Query(100, le=500),
 ):
-    """当前用户自己的 OA 公文池。"""
-    q = db.query(OAWorkItem).filter(OAWorkItem.owner_user_id == user.id)
+    """当前用户自己的 OA 公文池（仅 is_active）。"""
+    q = db.query(OAWorkItem).filter(
+        OAWorkItem.owner_user_id == user.id,
+        OAWorkItem.is_active.is_(True),
+    )
     if module_code:
         q = q.filter(OAWorkItem.module_code == module_code)
     if keyword:
@@ -136,7 +142,10 @@ def oa_stats(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
             func.count(OAWorkItem.id),
             func.max(OAWorkItem.synced_at),
         )
-        .filter(OAWorkItem.owner_user_id == user.id)
+        .filter(
+            OAWorkItem.owner_user_id == user.id,
+            OAWorkItem.is_active.is_(True),
+        )
         .group_by(OAWorkItem.module_code, OAWorkItem.module_name)
         .all()
     )
@@ -191,6 +200,7 @@ def oa_inbox(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
         .filter(
             OAWorkItem.owner_user_id == user.id,
             OAWorkItem.module_code == "todo",
+            OAWorkItem.is_active.is_(True),
         )
         .order_by(OAWorkItem.synced_at.desc())
         .limit(50)
@@ -303,15 +313,26 @@ def oa_sync(
     imported = updated = total = 0
     module_dicts: list[dict[str, Any]] = [m.to_dict() for m in report.module_results]
     try:
-        if report.items:
-            stats = sync_oa_work_items(db, user, profile.username, report.items)
-            imported = stats["imported"]
-            updated = stats["updated"]
-            total = stats["total"]
-            module_dicts = merge_module_import_stats(
-                report.module_results, stats.get("by_module") or {}
-            )
+        # 即使 items 为空，也要执行完整成功模块的失效清理
+        stats = sync_oa_work_items(
+            db,
+            user,
+            profile.username,
+            report.items,
+            module_results=report.module_results,
+        )
+        imported = stats["imported"]
+        updated = stats["updated"]
+        total = stats["total"]
+        module_dicts = merge_module_import_stats(
+            report.module_results, stats.get("by_module") or {}
+        )
     except Exception:
+        # 必须先回滚，避免 write_oa_sync_log 的 commit 带入半成品 OAWorkItem
+        try:
+            db.rollback()
+        except Exception:
+            pass
         write_oa_sync_log(
             db,
             user_id=user.id,

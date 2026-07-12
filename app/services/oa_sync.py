@@ -9,7 +9,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import OASyncLog, OAWorkItem, User
-from app.services.oa_client import OAFetchedItem, OAModuleFetchResult
+from app.services.oa_client import (
+    OAFetchedItem,
+    OAModuleFetchResult,
+    safe_error_text,
+    sanitize_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,16 +24,23 @@ def sync_oa_work_items(
     owner: User,
     oa_user_code: str,
     fetched_items: list[OAFetchedItem],
+    module_results: list[OAModuleFetchResult] | None = None,
 ) -> dict[str, Any]:
     """
-    按唯一键 upsert。不覆盖 linked_item_id。
-    返回 imported / updated / total / by_module。
+    按唯一键 upsert；is_active=true。
+    仅对 complete=true 且 success=true 的模块，将本轮未出现的旧记录 is_active=false。
+    不覆盖 linked_item_id；不物理删除。
+    返回 imported / updated / total / deactivated / by_module。
     """
     imported = 0
     updated = 0
+    deactivated = 0
     by_module: dict[str, dict[str, int]] = {}
     now = datetime.utcnow()
     oa_code = (oa_user_code or owner.username or "").strip()
+
+    # 本轮各模块出现的 external_key
+    seen_by_module: dict[str, set[str]] = {}
 
     for fi in fetched_items:
         stepinco = fi.stepinco or ""
@@ -36,7 +48,8 @@ def sync_oa_work_items(
         ext = fi.external_key
         code = fi.module_code
         if code not in by_module:
-            by_module[code] = {"imported": 0, "updated": 0}
+            by_module[code] = {"imported": 0, "updated": 0, "deactivated": 0}
+        seen_by_module.setdefault(code, set()).add(ext)
 
         existing = (
             db.query(OAWorkItem)
@@ -78,6 +91,8 @@ def sync_oa_work_items(
             existing.raw_json = raw_json
             existing.synced_at = now
             existing.updated_at = now
+            existing.is_active = True
+            # 不覆盖 linked_item_id
             updated += 1
             by_module[code]["updated"] += 1
         else:
@@ -105,16 +120,46 @@ def sync_oa_work_items(
                     urgency=fi.urgency,
                     raw_json=raw_json,
                     linked_item_id=None,
+                    is_active=True,
                     synced_at=now,
                 )
             )
             imported += 1
             by_module[code]["imported"] += 1
 
+    # 仅完整成功的模块可停用本轮未出现的旧记录
+    complete_modules: set[str] = set()
+    if module_results:
+        for m in module_results:
+            if m.success and m.complete and not m.truncated:
+                complete_modules.add(m.module_code)
+                seen_by_module.setdefault(m.module_code, set())
+
+    for code in complete_modules:
+        seen = seen_by_module.get(code) or set()
+        q = (
+            db.query(OAWorkItem)
+            .filter(
+                OAWorkItem.owner_user_id == owner.id,
+                OAWorkItem.module_code == code,
+                OAWorkItem.is_active.is_(True),
+            )
+        )
+        stale = q.all()
+        for row in stale:
+            if row.external_key not in seen:
+                row.is_active = False
+                row.updated_at = now
+                # 保留 linked_item_id
+                deactivated += 1
+                by_module.setdefault(code, {"imported": 0, "updated": 0, "deactivated": 0})
+                by_module[code]["deactivated"] = by_module[code].get("deactivated", 0) + 1
+
     db.commit()
     return {
         "imported": imported,
         "updated": updated,
+        "deactivated": deactivated,
         "total": imported + updated,
         "by_module": by_module,
     }
@@ -131,8 +176,34 @@ def merge_module_import_stats(
         stats = by_module.get(m.module_code) or {}
         d["imported"] = int(stats.get("imported") or 0)
         d["updated"] = int(stats.get("updated") or 0)
+        d["deactivated"] = int(stats.get("deactivated") or 0)
         out.append(d)
     return out
+
+
+def _safe_module_result_dict(m: dict[str, Any] | OAModuleFetchResult) -> dict[str, Any]:
+    if isinstance(m, OAModuleFetchResult):
+        d = m.to_dict()
+    else:
+        d = {
+            "module_code": m.get("module_code"),
+            "module_name": m.get("module_name"),
+            "success": bool(m.get("success")),
+            "fetched": int(m.get("fetched") or 0),
+            "pages": int(m.get("pages") or 0),
+            "imported": int(m.get("imported") or 0),
+            "updated": int(m.get("updated") or 0),
+            "deactivated": int(m.get("deactivated") or 0),
+            "complete": bool(m.get("complete")),
+            "truncated": bool(m.get("truncated")),
+            "error": safe_error_text(m.get("error"), default="OA 模块同步失败")
+            if m.get("error")
+            else None,
+        }
+    # 再 scrub 一遍
+    if d.get("error"):
+        d["error"] = safe_error_text(d["error"], default="OA 模块同步失败")
+    return d
 
 
 def write_oa_sync_log(
@@ -152,35 +223,15 @@ def write_oa_sync_log(
     """
     写入同步诊断记录。失败时吞掉异常并 rollback，不影响主流程。
     严禁写入密码、cookie、token、原始响应。
+    调用前应确保主业务事务已 commit/rollback，避免误提交残留对象。
     """
     try:
-        results_dicts: list[dict[str, Any]] = []
-        for m in module_results:
-            if isinstance(m, OAModuleFetchResult):
-                results_dicts.append(m.to_dict())
-            elif isinstance(m, dict):
-                # 白名单字段
-                results_dicts.append(
-                    {
-                        "module_code": m.get("module_code"),
-                        "module_name": m.get("module_name"),
-                        "success": bool(m.get("success")),
-                        "fetched": int(m.get("fetched") or 0),
-                        "pages": int(m.get("pages") or 0),
-                        "imported": int(m.get("imported") or 0),
-                        "updated": int(m.get("updated") or 0),
-                        "error": (str(m["error"])[:120] if m.get("error") else None),
-                    }
-                )
-        summary = error_summary
-        if summary and len(summary) > 500:
-            summary = summary[:500] + "…"
-        # 过滤敏感词痕迹
-        for bad in ("password", "cookie", "token", "authorization", "Bearer "):
-            if summary and bad.lower() in summary.lower():
-                summary = "同步过程出现错误（已隐藏敏感细节）"
-                break
+        results_dicts = [_safe_module_result_dict(m) for m in module_results]
+        summary = None
+        if error_summary:
+            summary = safe_error_text(error_summary, default="同步过程出现错误")
 
+        # 使用独立事务感：先 flush 前的脏对象不应被提交——调用方须先 rollback
         log = OASyncLog(
             user_id=user_id,
             trigger=trigger if trigger in ("login", "manual") else "manual",
@@ -188,7 +239,9 @@ def write_oa_sync_log(
             imported=imported,
             updated=updated,
             total=total,
-            module_results_json=json.dumps(results_dicts, ensure_ascii=False),
+            module_results_json=json.dumps(
+                sanitize_value(results_dicts), ensure_ascii=False
+            ),
             error_summary=summary,
             started_at=started_at,
             finished_at=finished_at or datetime.utcnow(),

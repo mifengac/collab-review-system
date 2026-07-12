@@ -75,9 +75,60 @@ OA_WORK_MODULES: dict[str, dict[str, Any]] = {
     },
 }
 
+# 敏感字段名（含子串匹配用）
+_SENSITIVE_KEY_NAMES = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "cookie",
+        "token",
+        "authorization",
+        "session",
+        "secret",
+        "credential",
+        "j_password",
+        "access_token",
+        "refresh_token",
+        "j_username",  # 账号也不写入 raw_json
+    }
+)
 _SENSITIVE_KEY_RE = re.compile(
-    r"(password|passwd|token|cookie|authorization|session|secret|credential)",
+    r"(password|passwd|pwd|cookie|token|authorization|session|secret|credential|j_password|access_token|refresh_token)",
     re.I,
+)
+
+# OA 列表行业务字段白名单（优先只保留这些）
+_OA_ITEM_WHITELIST = frozenset(
+    {
+        "fileSrc",
+        "docseq",
+        "recedate",
+        "finiFlag",
+        "dealindx",
+        "instCrda",
+        "isurge",
+        "dealMan",
+        "fileSrcId",
+        "readFlag",
+        "stepname",
+        "deal_man",
+        "periname",
+        "flowinid",
+        "finsname",
+        "worklist_itemex1",
+        "stepinco",
+        "worklist_itemex4",
+        "hasattach",
+        "worklist_itemex5",
+        "worklist_itemex2",
+        "worklist_itemex3",
+        "instCrea",
+        "flowname",
+        "sysurge",
+        "starLevel",
+        "openDate",
+    }
 )
 
 
@@ -123,6 +174,9 @@ class OAModuleFetchResult:
     pages: int = 0
     imported: int = 0
     updated: int = 0
+    deactivated: int = 0
+    complete: bool = False
+    truncated: bool = False
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -134,6 +188,9 @@ class OAModuleFetchResult:
             "pages": self.pages,
             "imported": self.imported,
             "updated": self.updated,
+            "deactivated": self.deactivated,
+            "complete": self.complete,
+            "truncated": self.truncated,
             "error": self.error,
         }
 
@@ -152,15 +209,87 @@ def _join_url(base: str, path: str) -> str:
     return urljoin(base, path)
 
 
-def _short_cn_error(exc: BaseException, default: str = "OA 模块同步失败") -> str:
-    """生成简短中文错误，不含原始响应正文与敏感信息。"""
-    msg = getattr(exc, "message", None)
-    if not msg:
-        msg = str(exc) if str(exc) else default
-    msg = str(msg).strip() or default
-    # 截断并避免看起来像 HTML/JSON 的大块内容
+def is_sensitive_key(key: Any) -> bool:
+    k = str(key or "").strip().lower()
+    if not k:
+        return False
+    if k in _SENSITIVE_KEY_NAMES:
+        return True
+    return bool(_SENSITIVE_KEY_RE.search(k))
+
+
+def sanitize_value(value: Any) -> Any:
+    """递归清洗任意结构中的敏感字段。"""
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if is_sensitive_key(k):
+                continue
+            out[str(k)] = sanitize_value(v)
+        return out
+    if isinstance(value, list):
+        return [sanitize_value(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        return str(type(value).__name__)
+
+
+def sanitize_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    """
+    列表行落库前清洗：优先业务白名单，并递归去除敏感键。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    # 白名单优先
+    filtered: dict[str, Any] = {}
+    for k, v in raw.items():
+        if k in _OA_ITEM_WHITELIST and not is_sensitive_key(k):
+            if isinstance(v, (dict, list)):
+                filtered[k] = sanitize_value(v)
+            elif isinstance(v, (str, int, float, bool)) or v is None:
+                filtered[k] = v
+    return filtered
+
+
+def safe_error_text(
+    exc: BaseException | str | None = None,
+    *,
+    default: str = "OA 模块同步失败",
+) -> str:
+    """
+    生成可落库/可返回前端的简短中文错误。
+    - 已知 OAAuth* 使用受控 message
+    - 未知异常不使用 str(exc)
+    """
+    if isinstance(exc, (OAAuthError, OAAuthUnavailable)):
+        msg = (exc.message or default).strip() or default
+    elif isinstance(exc, str):
+        msg = exc.strip() or default
+    elif exc is None:
+        msg = default
+    else:
+        # 未知异常：不暴露 str(exc)
+        msg = default
+
     if "<" in msg and ">" in msg:
         return default
+    low = msg.lower()
+    for bad in (
+        "password",
+        "passwd",
+        "cookie",
+        "token",
+        "authorization",
+        "bearer ",
+        "j_password",
+        "secret",
+    ):
+        if bad in low:
+            return "同步过程出现错误（已隐藏敏感细节）"
     if len(msg) > 120:
         msg = msg[:120] + "…"
     return msg
@@ -215,23 +344,6 @@ def _str_or_none(value: Any) -> str | None:
         return None
     s = str(value).strip()
     return s or None
-
-
-def sanitize_raw(raw: dict[str, Any]) -> dict[str, Any]:
-    """过滤疑似敏感字段后再落库。"""
-    out: dict[str, Any] = {}
-    for k, v in raw.items():
-        if _SENSITIVE_KEY_RE.search(str(k)):
-            continue
-        if isinstance(v, (str, int, float, bool)) or v is None:
-            out[k] = v
-        else:
-            try:
-                json.dumps(v, ensure_ascii=False)
-                out[k] = v
-            except TypeError:
-                out[k] = str(v)[:200]
-    return out
 
 
 def normalize_oa_item(
@@ -308,12 +420,16 @@ def fetch_oa_module_page(
     client: httpx.Client,
     module_code: str,
     page: int,
-) -> tuple[list[OAFetchedItem], int | None]:
-    """拉取单模块单页。返回 (items, totalCount)。"""
+) -> tuple[list[OAFetchedItem], int | None, int]:
+    """
+    拉取单模块单页。
+    返回 (normalized_items, totalCount, raw_row_count)。
+    raw_row_count 用于分页完整性判断，避免归一化失败误判。
+    """
     cfg = OA_WORK_MODULES.get(module_code)
     if not cfg:
         logger.info("unknown OA module_code=%s skipped", module_code)
-        return [], None
+        return [], None, 0
 
     settings = get_settings()
     base = (settings.oa_base_url or "").strip()
@@ -326,6 +442,7 @@ def fetch_oa_module_page(
     form = {k: (v.replace("{page}", str(page)) if isinstance(v, str) else v) for k, v in form_tpl.items()}
 
     resp = client.post(url, params=query, data=form)
+    # 仅记录模块、页码、状态码，不记录 body/url 参数细节
     logger.info(
         "OA list module=%s page=%s status=%s",
         module_code,
@@ -343,6 +460,7 @@ def fetch_oa_module_page(
     rows = data.get("result") or []
     if not isinstance(rows, list):
         rows = []
+    raw_count = len(rows)
     total = data.get("totalCount")
     try:
         total_i = int(total) if total is not None else None
@@ -357,7 +475,7 @@ def fetch_oa_module_page(
         item = normalize_oa_item(module_code, module_name, row)
         if item:
             items.append(item)
-    return items, total_i
+    return items, total_i, raw_count
 
 
 def _fetch_one_module(
@@ -370,27 +488,52 @@ def _fetch_one_module(
     module_name = str(cfg.get("name") or code)
     items: list[OAFetchedItem] = []
     pages_done = 0
+    total_count: int | None = None
+    cumulative_raw = 0
+    complete = False
+    truncated = False
+
     try:
         for page in range(1, max_pages + 1):
-            batch, total = fetch_oa_module_page(client, code, page)
+            batch, total, raw_count = fetch_oa_module_page(client, code, page)
             pages_done += 1
             items.extend(batch)
-            if not batch:
+            cumulative_raw += raw_count
+            if total is not None:
+                total_count = total
+
+            # 空列表：模块确实为空或已到末页
+            if raw_count == 0:
+                complete = True
                 break
-            if total is not None and page * max(len(batch), 1) >= total:
+
+            # totalCount 存在：用累计原始行数判断是否拉完
+            if total_count is not None and cumulative_raw >= total_count:
+                complete = True
                 break
-            if len(batch) < max(1, page_size // 2):
+
+            # 无 totalCount：本页原始行数明显少于页大小，视为最后一页
+            if total_count is None and raw_count < page_size:
+                complete = True
                 break
+
+            # 达到最大页数仍未确认末页
+            if page >= max_pages:
+                truncated = True
+                complete = False
+                break
+
         return items, OAModuleFetchResult(
             module_code=code,
             module_name=module_name,
             success=True,
             fetched=len(items),
             pages=pages_done,
+            complete=complete,
+            truncated=truncated,
         )
     except Exception as exc:
-        # 模块级失败：返回已拉取到的部分数据 + 错误
-        err = _short_cn_error(exc, default=f"{module_name}同步失败")
+        err = safe_error_text(exc, default="OA 模块同步失败")
         logger.info("OA module fetch failed code=%s err_type=%s", code, type(exc).__name__)
         return items, OAModuleFetchResult(
             module_code=code,
@@ -398,6 +541,8 @@ def _fetch_one_module(
             success=False,
             fetched=len(items),
             pages=pages_done,
+            complete=False,
+            truncated=False,
             error=err,
         )
 
@@ -435,6 +580,7 @@ def fetch_oa_work_items_report(
                     module_code=code,
                     module_name=code,
                     success=False,
+                    complete=False,
                     error="未知模块编码",
                 )
             )
@@ -451,6 +597,10 @@ def fetch_oa_work_items_report(
     elif status == "partial":
         failed_names = [m.module_name for m in results if not m.success]
         summary = "部分模块同步失败：" + "、".join(failed_names)
+    truncated_names = [m.module_name for m in results if m.success and m.truncated]
+    if truncated_names:
+        extra = "分页未拉完（未清理旧记录）：" + "、".join(truncated_names)
+        summary = f"{summary}；{extra}" if summary else extra
 
     return OAFetchReport(
         items=all_items,

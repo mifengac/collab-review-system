@@ -27,6 +27,9 @@ class OAModuleResultOut(BaseModel):
     pages: int = 0
     imported: int = 0
     updated: int = 0
+    deactivated: int = 0
+    complete: bool = False
+    truncated: bool = False
     error: str | None = None
 
 
@@ -272,6 +275,7 @@ class OAWorkItemOut(ORMModel):
     fini_flag: int | None = None
     urgency: int | None = None
     linked_item_id: int | None = None
+    is_active: bool = True
     synced_at: datetime
     created_at: datetime
     updated_at: datetime

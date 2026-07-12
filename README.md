@@ -135,6 +135,9 @@ OA_LIST_PATH=/hmoa/s
 - 不保存 OA 密码/cookie；手动「重新同步」需本次输入密码。  
 - 前端：**OA 公文池**（`/oa_items.html`）→「进入协同办理」→ 创建/打开事项。  
 - **模块级诊断**：每个模块独立统计成功/失败；部分失败时状态为 `partial`，成功数据仍入库；记录见 `oa_sync_logs` 与 `GET /api/oa/sync-logs`。  
+- **当前有效列表 `is_active`**：仅完整同步成功的模块会将本轮未出现的旧记录标为 inactive（不物理删除，保留 `linked_item_id`）。失败或分页未拉完（`truncated`）**不清理**旧数据。  
+- **旧库兼容**：启动时自动为 `oa_work_items` 补齐 `is_active` 列，无需删除 `collab.db`。  
+- **敏感信息**：列表 raw 白名单 + 递归清洗；错误与日志不含密码/Cookie/Token/原始响应。  
 - **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。  
 - 交接文档唯一入口：`DEVELOPMENT_HANDOFF.md`。
 

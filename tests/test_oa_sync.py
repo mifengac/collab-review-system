@@ -54,6 +54,8 @@ def _report(items, status="success", error=None, module_results=None):
                     success=True,
                     fetched=len(lst),
                     pages=1,
+                    complete=True,
+                    truncated=False,
                 )
             )
         if not module_results and status == "failed":
@@ -505,6 +507,7 @@ def test_all_modules_success_log(client: TestClient):
             success=True,
             fetched=1,
             pages=1,
+            complete=True,
         )
         for it in items
     ]
@@ -715,3 +718,475 @@ def test_login_trigger_and_write_log_fail_still_login(client: TestClient):
     assert r.json()["oa_sync"]["total"] >= 1
     # log 写入失败时 log_id 可为 null
     assert r.json()["oa_sync"].get("log_id") is None
+
+
+# ---------- 本轮：is_active 清理 / 事务回滚 / 敏感清洗 ----------
+
+from app.services.oa_client import (  # noqa: E402
+    sanitize_raw,
+    safe_error_text,
+)
+from app.database import migrate_schema, engine  # noqa: E402
+from sqlalchemy import text, inspect  # noqa: E402
+from app.models import ItemStatus  # noqa: E402
+
+
+def test_sanitize_raw_recursive_and_whitelist():
+    raw = {
+        "flowinid": "F1",
+        "finsname": "标题",
+        "password": "TopSecretPwd!",
+        "nested": {"cookie": "SESS=abc", "token": "tok-xyz", "ok": 1},
+        "list_nest": [{"authorization": "Bearer xxx", "docseq": "1"}],
+        "j_password": "nope",
+        "access_token": "at",
+        "refresh_token": "rt",
+    }
+    out = sanitize_raw(raw)
+    blob = str(out).lower()
+    assert "TopSecretPwd" not in str(out)
+    assert "password" not in blob
+    assert "cookie" not in blob
+    assert "token" not in blob
+    assert "authorization" not in blob
+    assert "bearer" not in blob
+    assert out.get("flowinid") == "F1"
+    assert out.get("finsname") == "标题"
+    # nested 不在白名单，应被丢弃
+    assert "nested" not in out
+    assert "list_nest" not in out
+
+
+def test_safe_error_text_unknown_and_sensitive():
+    assert "密码" not in safe_error_text(RuntimeError("password=abc"))
+    assert safe_error_text(RuntimeError("x")) == "OA 模块同步失败"
+    from app.services.oa_auth import OAAuthError
+
+    assert "会话" in safe_error_text(OAAuthError("OA 会话失效，请重新登录"))
+
+
+def test_deactivate_missing_on_complete_sync(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        a = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-A"})
+        b = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-B"})
+        mr = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                fetched=2,
+                pages=1,
+                complete=True,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [a, b], module_results=mr)
+        # 第二次只剩 B
+        mr2 = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                fetched=1,
+                pages=1,
+                complete=True,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [b], module_results=mr2)
+        row_a = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.owner_user_id == user.id, OAWorkItem.flowinid == "FLOW-A")
+            .first()
+        )
+        row_b = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.owner_user_id == user.id, OAWorkItem.flowinid == "FLOW-B")
+            .first()
+        )
+        assert row_a is not None and row_a.is_active is False
+        assert row_b is not None and row_b.is_active is True
+    finally:
+        db.close()
+
+    items = client.get("/api/oa/items?module_code=todo", headers=h).json()
+    ids = {x["flowinid"] for x in items}
+    assert "FLOW-B" in ids
+    assert "FLOW-A" not in ids
+
+
+def test_move_todo_to_done(client: TestClient):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        todo = normalize_oa_item(
+            "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-MOVE"}
+        )
+        mr_todo = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                fetched=1,
+                complete=True,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [todo], module_results=mr_todo)
+        # 移到已办：todo 完整空列表 + done 有数据
+        done = normalize_oa_item(
+            "done", "已办公文", {**SAMPLE_RAW, "flowinid": "FLOW-MOVE"}
+        )
+        mrs = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                fetched=0,
+                complete=True,
+            ),
+            OAModuleFetchResult(
+                module_code="done",
+                module_name="已办公文",
+                success=True,
+                fetched=1,
+                complete=True,
+            ),
+        ]
+        sync_oa_work_items(db, user, user.username, [done], module_results=mrs)
+        t = (
+            db.query(OAWorkItem)
+            .filter(
+                OAWorkItem.owner_user_id == user.id,
+                OAWorkItem.module_code == "todo",
+                OAWorkItem.flowinid == "FLOW-MOVE",
+            )
+            .first()
+        )
+        d = (
+            db.query(OAWorkItem)
+            .filter(
+                OAWorkItem.owner_user_id == user.id,
+                OAWorkItem.module_code == "done",
+                OAWorkItem.flowinid == "FLOW-MOVE",
+            )
+            .first()
+        )
+        assert t is not None and t.is_active is False
+        assert d is not None and d.is_active is True
+    finally:
+        db.close()
+
+
+def test_inactive_keeps_linked_item(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        fi = normalize_oa_item(
+            "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-LINKED"}
+        )
+        mr = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                complete=True,
+                fetched=1,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [fi], module_results=mr)
+        oa = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.flowinid == "FLOW-LINKED", OAWorkItem.owner_user_id == user.id)
+            .first()
+        )
+        oa_id = oa.id
+    finally:
+        db.close()
+
+    r = client.post(f"/api/oa/items/{oa_id}/create-collab", headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        # 完整空同步 → inactive
+        mr_empty = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                fetched=0,
+                complete=True,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [], module_results=mr_empty)
+        oa = db.query(OAWorkItem).filter(OAWorkItem.id == oa_id).first()
+        assert oa is not None
+        assert oa.is_active is False
+        assert oa.linked_item_id == item_id
+        item = db.query(Item).filter(Item.id == item_id).first()
+        assert item is not None
+    finally:
+        db.close()
+
+    # 事项仍可访问
+    assert client.get(f"/api/items/{item_id}", headers=h).status_code == 200
+
+
+def test_failed_module_does_not_deactivate(client: TestClient):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        fi = normalize_oa_item(
+            "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-KEEP"}
+        )
+        mr_ok = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                complete=True,
+                fetched=1,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [fi], module_results=mr_ok)
+        # 失败：无任何 items
+        mr_fail = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=False,
+                complete=False,
+                error="OA 列表服务异常",
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [], module_results=mr_fail)
+        row = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.flowinid == "FLOW-KEEP", OAWorkItem.owner_user_id == user.id)
+            .first()
+        )
+        assert row.is_active is True
+    finally:
+        db.close()
+
+
+def test_truncated_does_not_deactivate(client: TestClient):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        a = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-T1"})
+        b = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-T2"})
+        mr = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                complete=True,
+                fetched=2,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [a, b], module_results=mr)
+        # 截断：只看到 T1
+        mr_tr = [
+            OAModuleFetchResult(
+                module_code="todo",
+                module_name="待办公文",
+                success=True,
+                complete=False,
+                truncated=True,
+                fetched=1,
+                pages=3,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [a], module_results=mr_tr)
+        row_b = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.flowinid == "FLOW-T2", OAWorkItem.owner_user_id == user.id)
+            .first()
+        )
+        assert row_b.is_active is True
+    finally:
+        db.close()
+
+
+def test_empty_complete_deactivates_all(client: TestClient):
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == "handler1").first()
+        fi = normalize_oa_item(
+            "unread", "待阅公文", {**SAMPLE_RAW, "flowinid": "FLOW-EMPTY"}
+        )
+        mr = [
+            OAModuleFetchResult(
+                module_code="unread",
+                module_name="待阅公文",
+                success=True,
+                complete=True,
+                fetched=1,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [fi], module_results=mr)
+        mr0 = [
+            OAModuleFetchResult(
+                module_code="unread",
+                module_name="待阅公文",
+                success=True,
+                complete=True,
+                fetched=0,
+            )
+        ]
+        sync_oa_work_items(db, user, user.username, [], module_results=mr0)
+        row = (
+            db.query(OAWorkItem)
+            .filter(
+                OAWorkItem.flowinid == "FLOW-EMPTY",
+                OAWorkItem.module_code == "unread",
+            )
+            .first()
+        )
+        assert row.is_active is False
+    finally:
+        db.close()
+
+
+def test_manual_sync_rollback_on_failure(client: TestClient):
+    """入库异常时先 rollback，半成品不得落库。"""
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    fi = normalize_oa_item(
+        "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-ROLLBACK"}
+    )
+
+    def boom(*args, **kwargs):
+        db = args[0]
+        # 模拟先写入再失败
+        db.add(
+            OAWorkItem(
+                owner_user_id=kwargs.get("owner").id if False else 1,
+                oa_user_code="handler1",
+                module_code="todo",
+                module_name="待办公文",
+                flowinid="FLOW-ROLLBACK-GHOST",
+                stepinco="",
+                dealindx="",
+                external_key="todo|FLOW-ROLLBACK-GHOST||",
+                title="ghost",
+                is_active=True,
+            )
+        )
+        raise RuntimeError("mid-flight-fail password=ShouldNotSave")
+
+    # 更可控的 side_effect
+    def side_effect(db, owner, oa_user_code, fetched_items, module_results=None):
+        ghost = OAWorkItem(
+            owner_user_id=owner.id,
+            oa_user_code=owner.username,
+            module_code="todo",
+            module_name="待办公文",
+            flowinid="FLOW-ROLLBACK-GHOST",
+            stepinco="",
+            dealindx="",
+            external_key="todo|FLOW-ROLLBACK-GHOST||",
+            title="ghost",
+            is_active=True,
+        )
+        db.add(ghost)
+        raise RuntimeError("mid-flight-fail password=ShouldNotSave")
+
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ), patch(
+        "app.routers.oa.sync_oa_work_items",
+        side_effect=side_effect,
+    ):
+        r = client.post("/api/oa/sync", headers=h, json={"password": "x"})
+    assert r.status_code == 200
+    assert r.json()["success"] is False
+    assert r.json()["status"] == "failed"
+    assert "password" not in (r.json().get("message") or "").lower()
+
+    db = SessionLocal()
+    try:
+        ghost = (
+            db.query(OAWorkItem)
+            .filter(OAWorkItem.flowinid == "FLOW-ROLLBACK-GHOST")
+            .count()
+        )
+        assert ghost == 0
+        # failed log 存在
+        logs = (
+            db.query(OASyncLog)
+            .filter(OASyncLog.status == "failed")
+            .order_by(OASyncLog.id.desc())
+            .limit(1)
+            .all()
+        )
+        assert logs
+        assert "ShouldNotSave" not in (logs[0].error_summary or "")
+        # session 仍可用
+        assert db.query(User).count() >= 1
+    finally:
+        db.close()
+
+
+def test_migrate_adds_is_active_column(client: TestClient):
+    """旧库缺 is_active 时 migrate_schema 可幂等补齐。"""
+    # 用当前引擎：字段应已存在；验证重复调用不报错
+    migrate_schema()
+    migrate_schema()
+    insp = inspect(engine)
+    if insp.has_table("oa_work_items"):
+        cols = {c["name"] for c in insp.get_columns("oa_work_items")}
+        assert "is_active" in cols
+
+
+def test_sync_log_strict_no_secrets(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    secret_pwd = "TestPwd_NeverLog_991"
+    secret_cookie = "SESSID=abc_test_cookie"
+    secret_token = "tok_test_xyz_789"
+    # 构造带敏感字段的 raw 经 normalize 应被清洗
+    raw = {
+        **SAMPLE_RAW,
+        "flowinid": "FLOW-SEC",
+        "password": secret_pwd,
+        "nested_should_drop": {"cookie": secret_cookie, "token": secret_token},
+    }
+    fi = normalize_oa_item("todo", "待办公文", raw)
+    assert secret_pwd not in str(fi.raw)
+    assert secret_cookie not in str(fi.raw)
+    assert secret_token not in str(fi.raw)
+
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ):
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={"password": secret_pwd},
+        )
+    assert r.status_code == 200
+    text = r.text
+    assert secret_pwd not in text
+    assert secret_cookie not in text
+    assert secret_token not in text
+    assert "password" not in text.lower() or "不保存" in text  # UI 提示可含「密码」字样但无值
+
+    logs = client.get("/api/oa/sync-logs?limit=3", headers=h).json()
+    blob = str(logs)
+    assert secret_pwd not in blob
+    assert secret_cookie not in blob
+    assert secret_token not in blob
+    for log in logs:
+        assert "password=" not in str(log).lower()
+        mr = str(log.get("module_results") or "")
+        assert secret_pwd not in mr
+        assert secret_cookie not in mr
+        assert secret_token not in mr

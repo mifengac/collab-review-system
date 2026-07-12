@@ -24,6 +24,7 @@
       font-size: 11px;
     }
     .mod-chip.ok { border-color: #abefc6; color: var(--success); }
+    .mod-chip.partial { border-color: #fedf89; color: var(--warning); }
     .mod-chip.bad { border-color: #fecdca; color: var(--danger); }
     .log-panel {
       border: 1px solid var(--border);
@@ -104,10 +105,19 @@
         `<div class="mod-chips">` +
         results
           .map((m) => {
-            const cls = m.success ? "ok" : "bad";
-            const extra = m.success
-              ? `拉取${m.fetched} / 新增${m.imported || 0} / 更新${m.updated || 0}`
-              : escapeHtml(m.error || "失败");
+            let cls = "bad";
+            let extra = escapeHtml(m.error || "同步失败");
+            if (m.success && m.truncated) {
+              cls = "partial";
+              extra = `已同步前 ${m.pages || "N"} 页，未清理旧记录 · 拉取${m.fetched}`;
+            } else if (m.success && m.complete) {
+              cls = "ok";
+              extra = `已完整同步 · 拉取${m.fetched} / 新增${m.imported || 0} / 更新${m.updated || 0}`;
+              if (m.deactivated) extra += ` / 停用${m.deactivated}`;
+            } else if (m.success) {
+              cls = "ok";
+              extra = `拉取${m.fetched} / 新增${m.imported || 0} / 更新${m.updated || 0}`;
+            }
             return `<span class="mod-chip ${cls}">${escapeHtml(m.module_name)}：${extra}</span>`;
           })
           .join("") +

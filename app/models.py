@@ -260,6 +260,8 @@ class OAWorkItem(Base):
 
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     linked_item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+    # 当前是否仍出现在对应模块的完整同步结果中
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
 
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

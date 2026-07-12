@@ -58,25 +58,24 @@
 - OA 公文池同步
 - 从 OA 公文池创建协同事项
 
-当前基线：以 `main` 最新为准（本轮：OA 同步诊断与模块级结果记录）。
+当前基线：以 `main` 最新为准（本轮：OA 过期记录清理 + 事务回滚 + 敏感信息清洗）。
 
 近期相关提交：
 
-- （本轮）Add OA sync diagnostics and module-level tracking
+- （本轮）Fix OA sync reconciliation and sensitive data handling
+- `9f60610 Add OA sync diagnostics and module-level tracking`
 - `ffc3ddf Update handoff after OA sync hardening`
-- `13010b9 Clear OA sync password variable before request`
-- `643711a Harden OA sync account binding and failure handling`
 - `73295de Add OA work item synchronization`
 
 交接文档约定：
 
 - **唯一**开发交接文件：`DEVELOPMENT_HANDOFF.md`
-- 已删除重复文件：`collab-review-system-development-handoff.md`
+- 禁止再创建 `collab-review-system-development-handoff.md`
 
 当前测试结果：
 
 - `.venv/bin/python -m pytest -q -s`
-- 结果：`59 passed`
+- 结果：`70 passed`
 - 说明：真实 OA 联调 **待内网验证**（本机仅 mock 测试）。
 
 ## 3. 角色设计

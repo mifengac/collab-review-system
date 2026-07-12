@@ -131,14 +131,19 @@ def _login_oa(db: Session, username: str, password: str) -> tuple[User, OASyncSt
             module_dicts = [m.to_dict() for m in report.module_results]
             log_id = None
             try:
-                if report.items:
-                    stats = sync_oa_work_items(db, user, profile.username, report.items)
-                    imported = stats["imported"]
-                    updated = stats["updated"]
-                    total = stats["total"]
-                    module_dicts = merge_module_import_stats(
-                        report.module_results, stats.get("by_module") or {}
-                    )
+                stats = sync_oa_work_items(
+                    db,
+                    user,
+                    profile.username,
+                    report.items,
+                    module_results=report.module_results,
+                )
+                imported = stats["imported"]
+                updated = stats["updated"]
+                total = stats["total"]
+                module_dicts = merge_module_import_stats(
+                    report.module_results, stats.get("by_module") or {}
+                )
             except Exception as exc:
                 try:
                     db.rollback()
