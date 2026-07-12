@@ -58,22 +58,26 @@
 - OA 公文池同步
 - 从 OA 公文池创建协同事项
 
-当前最近提交：
+当前基线：以 `main` 最新为准（本轮：OA 同步诊断与模块级结果记录）。
 
+近期相关提交：
+
+- （本轮）Add OA sync diagnostics and module-level tracking
+- `ffc3ddf Update handoff after OA sync hardening`
 - `13010b9 Clear OA sync password variable before request`
 - `643711a Harden OA sync account binding and failure handling`
-- `92e409d Add handoff doc with original filename`
-- `196f71b Add development handoff documentation`
 - `73295de Add OA work item synchronization`
-- `4e584ee Add optional OA authentication adapter`
-- `e7b2f05 Close assignment and creation permission gaps`
-- `85bc9b7 Add office assignment and supervision workflow`
+
+交接文档约定：
+
+- **唯一**开发交接文件：`DEVELOPMENT_HANDOFF.md`
+- 已删除重复文件：`collab-review-system-development-handoff.md`
 
 当前测试结果：
 
 - `.venv/bin/python -m pytest -q -s`
-- 结果：`52 passed`
-- 说明：直接 `pytest -q` 曾遇到 pytest 输出捕获临时文件异常；关闭捕获后业务测试全部通过。
+- 结果：`59 passed`
+- 说明：真实 OA 联调 **待内网验证**（本机仅 mock 测试）。
 
 ## 3. 角色设计
 
@@ -288,37 +292,53 @@ HAR 中观察到的列表入口：
 - 说明主要接口：`/api/oa/items`、`/api/oa/stats`、`/api/oa/sync`、`/api/oa/items/{id}/create-collab`。
 - 说明第一版限制：不下载附件、不读正文、不回写 OA。
 
-## 7. 回家继续开发建议
+## 7. 本轮：OA 同步诊断与模块级跟踪
 
-建议先从“真实 OA 联调”开始，不要急着接 ONLYOFFICE。现在代码里的安全兜底已经补上，可以更安心地拿真实 OA 环境验证。
+### 7.1 能力摘要
 
-推荐顺序：
+- 新表 `oa_sync_logs`：记录每次 login/manual 同步的总体状态与五类模块明细。
+- 模块独立失败隔离：某一类公文接口异常不影响其他类成功数据入库。
+- 状态：`success` / `partial` / `failed`。
+- 接口：`GET /api/oa/sync-logs`（普通用户仅自己；管理员可看全部）。
+- 前端：公文池展示最近同步状态、分模块结果、同步记录区；密码仍用 modal，不写 storage。
 
-1. `git pull` 确认拿到 `13010b9`。
-2. 复制 `.env.example` 为 `.env`，配置 `AUTH_MODE=mixed` 和真实 `OA_BASE_URL`。
-3. 先关闭 `OA_SYNC_ON_LOGIN`，只验证 OA 登录是否能创建/更新本地用户。
-4. 再开启 `OA_SYNC_ON_LOGIN=true`，登录后看“OA 公文池”五个模块是否有数据。
-5. 如果某个模块没有数据，抓该模块 HAR，对比 `/hmoa/s` 的 `service`、query、form 参数。
-6. 用“重新同步”按钮测一次手动同步，确认密码 modal、账号一致性校验、403 提示都正常。
-7. 点“进入协同办理”，确认 OA 公文能生成系统内事项。
+### 7.2 OASyncLog 字段
 
-继续开发时优先看这些文件：
+- `id`, `user_id`, `trigger`（login|manual）, `status`（success|partial|failed）
+- `imported`, `updated`, `total`
+- `module_results_json`（每模块：code/name/success/fetched/imported/updated/pages/error）
+- `error_summary`, `started_at`, `finished_at`, `created_at`
+- **禁止**写入密码、Cookie、Token、原始 OA 响应正文
 
-- `app/services/oa_client.py`：OA 五类公文列表参数和字段解析。
-- `app/services/oa_auth.py`：OA 登录、用户信息解析。
-- `app/routers/oa.py`：OA 公文池接口和从 OA 创建协同事项。
-- `app/routers/auth.py`：OA 登录后自动同步逻辑。
-- `frontend/oa_items.html`：OA 公文池页面。
-- `tests/test_oa_sync.py`：OA 同步相关测试。
+### 7.3 真实 OA 联调检查表（待内网验证）
+
+> 本机未连接真实 OA，**不得声称已完成真实联调**。
+
+1. 分别确认五类模块是否成功：todo / unread / done / read_done / running。
+2. 记录每类返回数量（与 OA 端肉眼核对）。
+3. 检查分页：`OA_SYNC_MAX_PAGES` 是否拉全；必要时加大页数后再测。
+4. 同一公文重复同步：只更新、不重复新增。
+5. 已创建协同事项的 `linked_item_id` 不被覆盖。
+6. 若某模块失败：记录模块名称、HTTP 状态、同步记录中的简短中文错误（**不要**把响应正文/HAR 提交到 GitHub）。
+7. 严禁提交：真实 OA 账号密码、Cookie、Token、完整响应、HAR。
+8. 若需调整 `OA_WORK_MODULES` 参数：必须以**内网最新 HAR** 为依据，并补充 mock 测试。
+
+### 7.4 继续开发优先文件
+
+- `app/services/oa_client.py`：五类模块拉取与模块级错误隔离
+- `app/services/oa_sync.py`：入库 + 同步日志写入
+- `app/routers/oa.py`：`/sync`、`/sync-logs`
+- `app/routers/auth.py`：登录后自动同步与日志
+- `frontend/oa_items.html`：状态与同步记录展示
+- `tests/test_oa_sync.py`
 
 ## 8. 后续路线建议
 
 短期优先：
 
-1. 在内网用真实 OA 账号测试五类公文池是否都有数据。
-2. 如果某一类公文不同步，抓取该模块 HAR，对比 `/hmoa/s` 的 `service`、query、form 参数。
-3. 增加“同步日志”页面，方便看每次同步成功、失败、拉取数量、错误摘要。
-4. 梳理本地账号与 OA `userCode` 是否一定一致；如果不一致，设计管理员维护的账号映射表，不要临时放行任意 username。
+1. 按 7.3 检查表完成内网真实 OA 联调。
+2. 若某类公文不同步，抓 HAR 对比 `/hmoa/s` 参数后有依据地改 `OA_WORK_MODULES`。
+3. 梳理本地账号与 OA `userCode` 是否一致；不一致则做管理员映射表，禁止任意 username。
 
 中期建议：
 

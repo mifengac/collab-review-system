@@ -1,8 +1,9 @@
-"""OA 公文池：列表、同步、创建协同事项。"""
+"""OA 公文池：列表、同步、创建协同事项、同步记录。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
@@ -11,15 +12,16 @@ from sqlalchemy.orm import Session, joinedload
 from app.auth import CurrentUser
 from app.config import get_settings
 from app.database import get_db
-from app.models import ActionType, Item, ItemStatus, OAWorkItem, UserRole
+from app.models import ActionType, Item, ItemStatus, OASyncLog, OAWorkItem, UserRole
 from app.schemas import (
     ItemDetail,
     OAInboxItem,
+    OAModuleResultOut,
     OAModuleStat,
+    OASyncLogOut,
     OASyncRequest,
     OASyncResponse,
     OAWorkItemOut,
-    UserOut,
 )
 from app.services.oa_auth import (
     OAAuthError,
@@ -27,7 +29,7 @@ from app.services.oa_auth import (
     authenticate_and_fetch_oa,
 )
 from app.services.oa_client import OA_WORK_MODULES
-from app.services.oa_sync import sync_oa_work_items
+from app.services.oa_sync import merge_module_import_stats, sync_oa_work_items, write_oa_sync_log
 from app.services.permissions import can_create_item
 from app.services.workflow import write_log
 
@@ -49,6 +51,54 @@ def _item_detail(db: Session, item_id: int) -> Item:
     if not item:
         raise HTTPException(status_code=404, detail="事项不存在")
     return item
+
+
+def _parse_module_results(raw_json: str | None) -> list[OAModuleResultOut]:
+    if not raw_json:
+        return []
+    try:
+        data = json.loads(raw_json)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[OAModuleResultOut] = []
+    for m in data:
+        if not isinstance(m, dict):
+            continue
+        try:
+            out.append(
+                OAModuleResultOut(
+                    module_code=str(m.get("module_code") or ""),
+                    module_name=str(m.get("module_name") or ""),
+                    success=bool(m.get("success")),
+                    fetched=int(m.get("fetched") or 0),
+                    pages=int(m.get("pages") or 0),
+                    imported=int(m.get("imported") or 0),
+                    updated=int(m.get("updated") or 0),
+                    error=m.get("error"),
+                )
+            )
+        except Exception:
+            continue
+    return out
+
+
+def _log_to_out(log: OASyncLog) -> OASyncLogOut:
+    return OASyncLogOut(
+        id=log.id,
+        user_id=log.user_id,
+        trigger=log.trigger,
+        status=log.status,
+        imported=log.imported,
+        updated=log.updated,
+        total=log.total,
+        module_results=_parse_module_results(log.module_results_json),
+        error_summary=log.error_summary,
+        started_at=log.started_at,
+        finished_at=log.finished_at,
+        created_at=log.created_at,
+    )
 
 
 @router.get("/items", response_model=list[OAWorkItemOut])
@@ -99,7 +149,6 @@ def oa_stats(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
         )
         for r in rows
     }
-    # 按固定模块顺序补齐 0
     out: list[OAModuleStat] = []
     for code, cfg in OA_WORK_MODULES.items():
         if code in by_code:
@@ -114,6 +163,24 @@ def oa_stats(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
                 )
             )
     return out
+
+
+@router.get("/sync-logs", response_model=list[OASyncLogOut])
+def list_sync_logs(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    user_id: int | None = None,
+    limit: int = Query(20, ge=1, le=100),
+):
+    """同步诊断记录：普通用户仅自己；管理员可看全部并可按 user_id 筛选。"""
+    q = db.query(OASyncLog)
+    if user.role == UserRole.admin:
+        if user_id is not None:
+            q = q.filter(OASyncLog.user_id == user_id)
+    else:
+        q = q.filter(OASyncLog.user_id == user.id)
+    logs = q.order_by(OASyncLog.created_at.desc(), OASyncLog.id.desc()).limit(limit).all()
+    return [_log_to_out(x) for x in logs]
 
 
 @router.get("/inbox", response_model=list[OAInboxItem])
@@ -152,9 +219,7 @@ def oa_sync(
     """
     手动同步：必须提供 password 临时登录 OA。
     不保存密码；会话仅存在于本次请求。
-
     始终使用当前登录用户 user.username 登录 OA。
-    请求体 username 字段仅兼容旧前端，后端忽略，禁止指定任意 OA 账号。
     """
     settings = get_settings()
     if not settings.oa_base_url:
@@ -164,10 +229,9 @@ def oa_sync(
             imported=0,
             updated=0,
             total=0,
+            status="failed",
         )
 
-    # 忽略 body.username，统一用当前登录用户，防止串号写入他人公文池。
-    # TODO: 若未来需支持「本地账号与 OA 编号不同」，由管理员维护映射表后再放行；当前禁止任意指定 OA 账号。
     username = user.username.strip()
     password = body.password or ""
     if not password:
@@ -177,44 +241,129 @@ def oa_sync(
             imported=0,
             updated=0,
             total=0,
+            status="failed",
         )
 
     modules = body.modules or settings.oa_sync_module_list
+    started = datetime.utcnow()
     try:
-        profile, items, fetch_err = authenticate_and_fetch_oa(
+        profile, report = authenticate_and_fetch_oa(
             username,
             password,
             modules=modules,
             max_pages=settings.oa_sync_max_pages,
         )
     except OAAuthError as exc:
+        write_oa_sync_log(
+            db,
+            user_id=user.id,
+            trigger="manual",
+            status="failed",
+            imported=0,
+            updated=0,
+            total=0,
+            module_results=[],
+            error_summary=exc.message,
+            started_at=started,
+        )
         raise HTTPException(status_code=401, detail=exc.message) from exc
     except OAAuthUnavailable as exc:
+        write_oa_sync_log(
+            db,
+            user_id=user.id,
+            trigger="manual",
+            status="failed",
+            imported=0,
+            updated=0,
+            total=0,
+            module_results=[],
+            error_summary=exc.message,
+            started_at=started,
+        )
         raise HTTPException(status_code=503, detail=exc.message) from exc
 
-    # 仅允许同步到当前登录用户（防止 OA 返回他人 profile 时写入）
     if profile.username.strip() != user.username.strip():
+        write_oa_sync_log(
+            db,
+            user_id=user.id,
+            trigger="manual",
+            status="failed",
+            imported=0,
+            updated=0,
+            total=0,
+            module_results=[m.to_dict() for m in report.module_results],
+            error_summary="OA 账号与当前登录用户不一致，禁止同步他人公文",
+            started_at=started,
+        )
         raise HTTPException(
             status_code=403,
             detail="OA 账号与当前登录用户不一致，禁止同步他人公文",
         )
 
-    if fetch_err and not items:
-        return OASyncResponse(
-            success=False,
-            message=f"OA 登录成功但列表同步失败：{fetch_err}",
+    imported = updated = total = 0
+    module_dicts: list[dict[str, Any]] = [m.to_dict() for m in report.module_results]
+    try:
+        if report.items:
+            stats = sync_oa_work_items(db, user, profile.username, report.items)
+            imported = stats["imported"]
+            updated = stats["updated"]
+            total = stats["total"]
+            module_dicts = merge_module_import_stats(
+                report.module_results, stats.get("by_module") or {}
+            )
+    except Exception:
+        write_oa_sync_log(
+            db,
+            user_id=user.id,
+            trigger="manual",
+            status="failed",
             imported=0,
             updated=0,
             total=0,
+            module_results=module_dicts,
+            error_summary="公文入库失败，请稍后重试",
+            started_at=started,
+        )
+        return OASyncResponse(
+            success=False,
+            message="公文入库失败，请稍后重试",
+            imported=0,
+            updated=0,
+            total=0,
+            status="failed",
+            module_results=[OAModuleResultOut.model_validate(m) for m in module_dicts],
         )
 
-    stats = sync_oa_work_items(db, user, profile.username, items)
+    log = write_oa_sync_log(
+        db,
+        user_id=user.id,
+        trigger="manual",
+        status=report.status,
+        imported=imported,
+        updated=updated,
+        total=total,
+        module_results=module_dicts,
+        error_summary=report.error_summary,
+        started_at=started,
+    )
+
+    success_flag = report.status in ("success", "partial")
+    if report.status == "success":
+        message = "同步完成"
+    elif report.status == "partial":
+        message = "部分模块同步失败，已保留成功同步的数据"
+    else:
+        message = report.error_summary or "同步失败"
+
     return OASyncResponse(
-        success=True,
-        message="同步完成",
-        imported=stats["imported"],
-        updated=stats["updated"],
-        total=stats["total"],
+        success=success_flag,
+        message=message,
+        imported=imported,
+        updated=updated,
+        total=total,
+        status=report.status,
+        log_id=log.id if log else None,
+        module_results=[OAModuleResultOut.model_validate(m) for m in module_dicts],
         data=[],
     )
 

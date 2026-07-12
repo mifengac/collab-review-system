@@ -114,10 +114,56 @@ class OAFetchedItem:
         )
 
 
+@dataclass
+class OAModuleFetchResult:
+    module_code: str
+    module_name: str
+    success: bool
+    fetched: int = 0
+    pages: int = 0
+    imported: int = 0
+    updated: int = 0
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "module_code": self.module_code,
+            "module_name": self.module_name,
+            "success": self.success,
+            "fetched": self.fetched,
+            "pages": self.pages,
+            "imported": self.imported,
+            "updated": self.updated,
+            "error": self.error,
+        }
+
+
+@dataclass
+class OAFetchReport:
+    items: list[OAFetchedItem] = field(default_factory=list)
+    module_results: list[OAModuleFetchResult] = field(default_factory=list)
+    status: str = "failed"  # success | partial | failed
+    error_summary: str | None = None
+
+
 def _join_url(base: str, path: str) -> str:
     base = (base or "").rstrip("/") + "/"
     path = (path or "").lstrip("/")
     return urljoin(base, path)
+
+
+def _short_cn_error(exc: BaseException, default: str = "OA 模块同步失败") -> str:
+    """生成简短中文错误，不含原始响应正文与敏感信息。"""
+    msg = getattr(exc, "message", None)
+    if not msg:
+        msg = str(exc) if str(exc) else default
+    msg = str(msg).strip() or default
+    # 截断并避免看起来像 HTML/JSON 的大块内容
+    if "<" in msg and ">" in msg:
+        return default
+    if len(msg) > 120:
+        msg = msg[:120] + "…"
+    return msg
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -180,7 +226,6 @@ def sanitize_raw(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(v, (str, int, float, bool)) or v is None:
             out[k] = v
         else:
-            # 嵌套结构只保留可序列化摘要
             try:
                 json.dumps(v, ensure_ascii=False)
                 out[k] = v
@@ -206,7 +251,6 @@ def normalize_oa_item(
     )
     doc_no = _str_or_none(raw.get("docseq"))
     source_unit = _str_or_none(raw.get("fileSrc")) or _str_or_none(raw.get("worklist_itemex3"))
-    # 空串便于唯一键；对外仍可用 or None 展示
     stepinco = _str_or_none(raw.get("stepinco")) or ""
     dealindx = _str_or_none(raw.get("dealindx")) or ""
     flow_name = _str_or_none(raw.get("flowname"))
@@ -246,10 +290,8 @@ def _response_to_json(resp: httpx.Response) -> dict[str, Any]:
     stripped = text.lstrip()
     lower = stripped.lower()
     if lower.startswith("<!doctype") or lower.startswith("<html"):
-        # 可能是登录页
         if "login" in lower or "j_security" in lower or "用户" in text[:500]:
             raise OAAuthError("OA 会话失效，请重新登录")
-        # 有些环境 content-type 标 html 但 body 是 JSON
     try:
         data = resp.json()
     except Exception:
@@ -291,11 +333,11 @@ def fetch_oa_module_page(
         resp.status_code,
     )
     if resp.status_code >= 500:
-        raise OAAuthUnavailable(f"OA 列表服务异常({module_code})")
+        raise OAAuthUnavailable("OA 列表服务异常")
     if resp.status_code in (401, 403):
-        raise OAAuthError("OA 会话无效或无权访问列表")
+        raise OAAuthError("OA 会话失效或无权访问该模块")
     if resp.status_code >= 400:
-        raise OAAuthUnavailable(f"OA 列表请求失败 status={resp.status_code}")
+        raise OAAuthUnavailable(f"OA 列表请求失败（HTTP {resp.status_code}）")
 
     data = _response_to_json(resp)
     rows = data.get("result") or []
@@ -318,29 +360,110 @@ def fetch_oa_module_page(
     return items, total_i
 
 
+def _fetch_one_module(
+    client: httpx.Client,
+    code: str,
+    max_pages: int,
+    page_size: int,
+) -> tuple[list[OAFetchedItem], OAModuleFetchResult]:
+    cfg = OA_WORK_MODULES[code]
+    module_name = str(cfg.get("name") or code)
+    items: list[OAFetchedItem] = []
+    pages_done = 0
+    try:
+        for page in range(1, max_pages + 1):
+            batch, total = fetch_oa_module_page(client, code, page)
+            pages_done += 1
+            items.extend(batch)
+            if not batch:
+                break
+            if total is not None and page * max(len(batch), 1) >= total:
+                break
+            if len(batch) < max(1, page_size // 2):
+                break
+        return items, OAModuleFetchResult(
+            module_code=code,
+            module_name=module_name,
+            success=True,
+            fetched=len(items),
+            pages=pages_done,
+        )
+    except Exception as exc:
+        # 模块级失败：返回已拉取到的部分数据 + 错误
+        err = _short_cn_error(exc, default=f"{module_name}同步失败")
+        logger.info("OA module fetch failed code=%s err_type=%s", code, type(exc).__name__)
+        return items, OAModuleFetchResult(
+            module_code=code,
+            module_name=module_name,
+            success=False,
+            fetched=len(items),
+            pages=pages_done,
+            error=err,
+        )
+
+
+def _compute_report_status(module_results: list[OAModuleFetchResult]) -> str:
+    if not module_results:
+        return "failed"
+    ok = sum(1 for m in module_results if m.success)
+    fail = sum(1 for m in module_results if not m.success)
+    if fail == 0:
+        return "success"
+    if ok == 0:
+        return "failed"
+    return "partial"
+
+
+def fetch_oa_work_items_report(
+    client: httpx.Client,
+    modules: list[str] | None = None,
+    max_pages: int | None = None,
+) -> OAFetchReport:
+    """按模块独立拉取；单模块失败不中断其他模块。"""
+    settings = get_settings()
+    mods = modules or settings.oa_sync_module_list or list(OA_WORK_MODULES.keys())
+    pages = max_pages if max_pages is not None else settings.oa_sync_max_pages
+    pages = max(1, min(int(pages), 20))
+    page_size = max(1, int(settings.oa_sync_page_size or 20))
+
+    all_items: list[OAFetchedItem] = []
+    results: list[OAModuleFetchResult] = []
+    for code in mods:
+        if code not in OA_WORK_MODULES:
+            results.append(
+                OAModuleFetchResult(
+                    module_code=code,
+                    module_name=code,
+                    success=False,
+                    error="未知模块编码",
+                )
+            )
+            continue
+        items, result = _fetch_one_module(client, code, pages, page_size)
+        all_items.extend(items)
+        results.append(result)
+
+    status = _compute_report_status(results)
+    errors = [m.error for m in results if m.error]
+    summary = None
+    if status == "failed":
+        summary = "；".join(errors[:3]) if errors else "全部模块同步失败"
+    elif status == "partial":
+        failed_names = [m.module_name for m in results if not m.success]
+        summary = "部分模块同步失败：" + "、".join(failed_names)
+
+    return OAFetchReport(
+        items=all_items,
+        module_results=results,
+        status=status,
+        error_summary=summary,
+    )
+
+
 def fetch_oa_work_items(
     client: httpx.Client,
     modules: list[str] | None = None,
     max_pages: int | None = None,
 ) -> list[OAFetchedItem]:
-    """按配置拉取多个模块多页列表。"""
-    settings = get_settings()
-    mods = modules or settings.oa_sync_module_list or list(OA_WORK_MODULES.keys())
-    pages = max_pages if max_pages is not None else settings.oa_sync_max_pages
-    pages = max(1, min(int(pages), 20))
-
-    all_items: list[OAFetchedItem] = []
-    for code in mods:
-        if code not in OA_WORK_MODULES:
-            continue
-        for page in range(1, pages + 1):
-            batch, total = fetch_oa_module_page(client, code, page)
-            all_items.extend(batch)
-            if not batch:
-                break
-            if total is not None and page * max(len(batch), 1) >= total:
-                break
-            # 若本页不足一页体量，认为没有下一页
-            if len(batch) < max(1, settings.oa_sync_page_size // 2):
-                break
-    return all_items
+    """兼容旧接口：仅返回已拉取条目列表。"""
+    return fetch_oa_work_items_report(client, modules=modules, max_pages=max_pages).items

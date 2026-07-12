@@ -189,28 +189,38 @@ def authenticate_and_fetch_oa(
     password: str,
     modules: list[str] | None = None,
     max_pages: int | None = None,
-) -> tuple[OAUserProfile, list, str | None]:
+):
     """
     同一会话内登录并拉取公文列表。
-    返回 (profile, fetched_items, fetch_error)。
-    列表失败不影响认证成功；cookie 仅在 with 块内存在。
+    返回 (profile, report: OAFetchReport)。
+    模块级失败记入 report，不导致登录失败；cookie 仅在 with 块内存在。
+
+    兼容：第三项仍可通过 report.error_summary 获取简要错误。
     """
-    from app.services.oa_client import fetch_oa_work_items
+    from app.services.oa_client import OAFetchReport, fetch_oa_work_items_report
 
     try:
         with _open_oa_client() as client:
             profile = _login_and_profile(client, username, password)
             try:
-                items = fetch_oa_work_items(client, modules=modules, max_pages=max_pages)
-                return profile, items, None
+                report = fetch_oa_work_items_report(
+                    client, modules=modules, max_pages=max_pages
+                )
+                return profile, report
             except Exception as exc:
-                # 不同步失败不抛出登录失败
-                msg = getattr(exc, "message", None) or str(exc) or "OA 列表同步失败"
-                # 不带出可能的敏感细节
-                if len(msg) > 200:
-                    msg = msg[:200]
+                # 整次拉取异常（非模块隔离内）
+                msg = getattr(exc, "message", None) or "OA 列表同步失败"
+                msg = str(msg).strip()
+                if len(msg) > 120:
+                    msg = msg[:120] + "…"
                 logger.info("OA fetch after login failed: %s", type(exc).__name__)
-                return profile, [], msg
+                report = OAFetchReport(
+                    items=[],
+                    module_results=[],
+                    status="failed",
+                    error_summary=msg,
+                )
+                return profile, report
     except (OAAuthError, OAAuthUnavailable):
         raise
     except httpx.TimeoutException as exc:

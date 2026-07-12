@@ -19,6 +19,17 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class OAModuleResultOut(BaseModel):
+    module_code: str
+    module_name: str
+    success: bool
+    fetched: int = 0
+    pages: int = 0
+    imported: int = 0
+    updated: int = 0
+    error: str | None = None
+
+
 class OASyncStatusOut(BaseModel):
     enabled: bool = False
     success: bool = False
@@ -26,6 +37,9 @@ class OASyncStatusOut(BaseModel):
     imported: int = 0
     updated: int = 0
     error: str | None = None
+    status: str | None = None  # success | partial | failed
+    log_id: int | None = None
+    module_results: list[OAModuleResultOut] = []
 
 
 class TokenResponse(BaseModel):
@@ -276,7 +290,25 @@ class OASyncResponse(BaseModel):
     imported: int = 0
     updated: int = 0
     total: int = 0
+    status: str | None = None  # success | partial | failed
+    log_id: int | None = None
+    module_results: list[OAModuleResultOut] = []
     data: list[Any] = []
+
+
+class OASyncLogOut(BaseModel):
+    id: int
+    user_id: int
+    trigger: str
+    status: str
+    imported: int
+    updated: int
+    total: int
+    module_results: list[OAModuleResultOut] = []
+    error_summary: str | None = None
+    started_at: datetime
+    finished_at: datetime
+    created_at: datetime
 
 
 class OAModuleStat(BaseModel):

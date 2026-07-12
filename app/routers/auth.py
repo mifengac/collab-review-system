@@ -33,7 +33,8 @@ from app.services.oa_auth import (
     authenticate_and_fetch_oa,
     authenticate_oa_user,
 )
-from app.services.oa_sync import sync_oa_work_items
+from app.schemas import OAModuleResultOut
+from app.services.oa_sync import merge_module_import_stats, sync_oa_work_items, write_oa_sync_log
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,19 @@ def _issue_token(user: User, oa_sync: OASyncStatusOut | None = None) -> TokenRes
         user=UserOut.model_validate(user),
         oa_sync=oa_sync,
     )
+
+
+def _module_results_out(raw_list: list) -> list[OAModuleResultOut]:
+    out: list[OAModuleResultOut] = []
+    for m in raw_list:
+        if hasattr(m, "to_dict"):
+            d = m.to_dict()
+        elif isinstance(m, dict):
+            d = m
+        else:
+            continue
+        out.append(OAModuleResultOut.model_validate(d))
+    return out
 
 
 def _resolve_default_oa_role() -> UserRole:
@@ -99,43 +113,88 @@ def _login_local(db: Session, username: str, password: str) -> User:
 
 
 def _login_oa(db: Session, username: str, password: str) -> tuple[User, OASyncStatusOut]:
+    from datetime import datetime
+
     settings = get_settings()
     try:
         if settings.oa_sync_on_login:
-            profile, items, fetch_err = authenticate_and_fetch_oa(
+            started = datetime.utcnow()
+            profile, report = authenticate_and_fetch_oa(
                 username,
                 password,
                 modules=settings.oa_sync_module_list,
                 max_pages=settings.oa_sync_max_pages,
             )
             user = upsert_oa_user(db, profile)
-            if fetch_err:
-                return user, OASyncStatusOut(
-                    enabled=True,
-                    success=False,
-                    error=fetch_err,
-                )
-            # 入库失败不影响已成功的 OA 登录与 JWT 签发
+
+            imported = updated = total = 0
+            module_dicts = [m.to_dict() for m in report.module_results]
+            log_id = None
             try:
-                stats = sync_oa_work_items(db, user, profile.username, items)
+                if report.items:
+                    stats = sync_oa_work_items(db, user, profile.username, report.items)
+                    imported = stats["imported"]
+                    updated = stats["updated"]
+                    total = stats["total"]
+                    module_dicts = merge_module_import_stats(
+                        report.module_results, stats.get("by_module") or {}
+                    )
             except Exception as exc:
-                db.rollback()
-                # 仅记录异常类型，不输出密码、cookie、token 或完整请求内容
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
                 logger.warning(
                     "OA work items sync after login failed: %s",
                     type(exc).__name__,
                 )
+                # 写失败记录本身不可抛出
+                write_oa_sync_log(
+                    db,
+                    user_id=user.id,
+                    trigger="login",
+                    status="failed",
+                    imported=0,
+                    updated=0,
+                    total=0,
+                    module_results=module_dicts,
+                    error_summary="OA 登录成功但公文入库失败，请稍后重试或联系管理员",
+                    started_at=started,
+                )
                 return user, OASyncStatusOut(
                     enabled=True,
                     success=False,
+                    status="failed",
                     error="OA 登录成功但公文入库失败，请稍后重试或联系管理员",
+                    module_results=_module_results_out(module_dicts),
                 )
+
+            # 诊断日志失败不影响登录与入库结果
+            log = write_oa_sync_log(
+                db,
+                user_id=user.id,
+                trigger="login",
+                status=report.status,
+                imported=imported,
+                updated=updated,
+                total=total,
+                module_results=module_dicts,
+                error_summary=report.error_summary,
+                started_at=started,
+            )
+            log_id = log.id if log else None
+
+            success_flag = report.status in ("success", "partial")
             return user, OASyncStatusOut(
                 enabled=True,
-                success=True,
-                total=stats["total"],
-                imported=stats["imported"],
-                updated=stats["updated"],
+                success=success_flag,
+                status=report.status,
+                total=total,
+                imported=imported,
+                updated=updated,
+                error=report.error_summary,
+                log_id=log_id,
+                module_results=_module_results_out(module_dicts),
             )
         profile = authenticate_oa_user(username, password)
         user = upsert_oa_user(db, profile)

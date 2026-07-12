@@ -269,3 +269,26 @@ class OAWorkItem(Base):
 
     owner = relationship("User", foreign_keys=[owner_user_id])
     linked_item = relationship("Item", foreign_keys=[linked_item_id])
+
+
+class OASyncLog(Base):
+    """OA 公文同步诊断记录（不含密码/cookie/原始响应）。"""
+
+    __tablename__ = "oa_sync_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    # login | manual
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    # success | partial | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="failed", index=True)
+    imported: Mapped[int] = mapped_column(Integer, default=0)
+    updated: Mapped[int] = mapped_column(Integer, default=0)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    module_results_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])

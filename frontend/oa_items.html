@@ -5,6 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OA 公文池 - 材料协同办理系统</title>
   <link rel="stylesheet" href="/assets/css/style.css" />
+  <style>
+    .sync-banner {
+      border: 1px solid var(--border);
+      background: #f6f8fa;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .sync-banner.ok { border-color: #abefc6; background: var(--success-bg); }
+    .sync-banner.partial { border-color: #fedf89; background: var(--warning-bg); }
+    .sync-banner.fail { border-color: #fecdca; background: var(--danger-bg); }
+    .mod-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .mod-chip {
+      border: 1px solid var(--border);
+      padding: 2px 8px;
+      background: #fff;
+      font-size: 11px;
+    }
+    .mod-chip.ok { border-color: #abefc6; color: var(--success); }
+    .mod-chip.bad { border-color: #fecdca; color: var(--danger); }
+    .log-panel {
+      border: 1px solid var(--border);
+      background: #fff;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .log-panel.show { display: block; }
+    .log-item {
+      border-bottom: 1px solid var(--border);
+      padding: 10px 12px;
+      font-size: 12px;
+    }
+    .log-item:last-child { border-bottom: none; }
+  </style>
 </head>
 <body>
   <script src="/assets/js/common.js"></script>
@@ -22,11 +56,25 @@
 
     let activeModule = "todo";
     let stats = [];
+    let lastLog = null;
+    let syncLogs = [];
 
-    function lastSyncText() {
-      const s = stats.find((x) => x.module_code === activeModule);
-      if (!s || !s.last_synced_at) return "尚未同步";
-      return fmtTime(s.last_synced_at);
+    function statusLabel(st) {
+      if (st === "success") return "成功";
+      if (st === "partial") return "部分成功";
+      if (st === "failed") return "失败";
+      return st || "—";
+    }
+
+    function statusBadge(st) {
+      if (st === "success") return `<span class="badge badge-done">成功</span>`;
+      if (st === "partial") return `<span class="badge badge-important">部分成功</span>`;
+      if (st === "failed") return `<span class="badge badge-urgent">失败</span>`;
+      return `<span class="badge">${escapeHtml(st || "—")}</span>`;
+    }
+
+    function triggerLabel(t) {
+      return t === "login" ? "登录自动" : t === "manual" ? "手动" : escapeHtml(t || "—");
     }
 
     function totalFor(code) {
@@ -34,11 +82,53 @@
       return s ? s.count : 0;
     }
 
+    function lastSyncText() {
+      if (lastLog && lastLog.finished_at) return fmtTime(lastLog.finished_at);
+      const s = stats.find((x) => x.module_code === activeModule);
+      if (!s || !s.last_synced_at) return "尚未同步";
+      return fmtTime(s.last_synced_at);
+    }
+
+    function bannerClass() {
+      if (!lastLog) return "";
+      if (lastLog.status === "success") return "ok";
+      if (lastLog.status === "partial") return "partial";
+      if (lastLog.status === "failed") return "fail";
+      return "";
+    }
+
+    function moduleChipsFromLog(log) {
+      const results = (log && log.module_results) || [];
+      if (!results.length) return `<span class="hint">暂无分模块结果</span>`;
+      return (
+        `<div class="mod-chips">` +
+        results
+          .map((m) => {
+            const cls = m.success ? "ok" : "bad";
+            const extra = m.success
+              ? `拉取${m.fetched} / 新增${m.imported || 0} / 更新${m.updated || 0}`
+              : escapeHtml(m.error || "失败");
+            return `<span class="mod-chip ${cls}">${escapeHtml(m.module_name)}：${extra}</span>`;
+          })
+          .join("") +
+        `</div>`
+      );
+    }
+
     async function loadStats() {
       try {
         stats = await api("/api/oa/stats");
       } catch {
         stats = [];
+      }
+    }
+
+    async function loadLastLog() {
+      try {
+        const logs = await api("/api/oa/sync-logs?limit=1");
+        lastLog = logs && logs.length ? logs[0] : null;
+      } catch {
+        lastLog = null;
       }
     }
 
@@ -78,7 +168,6 @@
     async function submitSync() {
       const input = document.getElementById("syncPwd");
       let pwd = input ? input.value : "";
-      // 提交后立即清空输入框；构造请求体后尽早清空 JS 变量，密码不进入 storage / URL
       clearSyncPassword();
       if (!pwd) {
         toast("未输入密码", "error");
@@ -93,7 +182,9 @@
           method: "POST",
           body: payload,
         });
-        if (!r.success) {
+        if (r.status === "partial") {
+          toast(r.message || "部分模块同步失败，已保留成功同步的数据", "error");
+        } else if (!r.success) {
           toast(r.message || "同步失败", "error");
         } else {
           toast(
@@ -110,6 +201,47 @@
 
     function doSync() {
       openSyncModal();
+    }
+
+    async function toggleLogs() {
+      const panel = document.getElementById("logPanel");
+      if (!panel) return;
+      if (panel.classList.contains("show")) {
+        panel.classList.remove("show");
+        return;
+      }
+      try {
+        syncLogs = await api("/api/oa/sync-logs?limit=15");
+      } catch (e) {
+        toast(e.message, "error");
+        return;
+      }
+      const body = document.getElementById("logBody");
+      if (!syncLogs.length) {
+        body.innerHTML = `<div class="log-item hint">暂无同步记录</div>`;
+      } else {
+        body.innerHTML = syncLogs
+          .map(
+            (log) => `<div class="log-item">
+              <div>
+                ${fmtTime(log.finished_at || log.created_at)}
+                · ${triggerLabel(log.trigger)}
+                · ${statusBadge(log.status)}
+                · 新增 ${log.imported} / 更新 ${log.updated} / 合计 ${log.total}
+              </div>
+              ${
+                log.error_summary
+                  ? `<div class="hint" style="margin-top:4px;color:var(--danger)">${escapeHtml(
+                      log.error_summary
+                    )}</div>`
+                  : ""
+              }
+              ${moduleChipsFromLog(log)}
+            </div>`
+          )
+          .join("");
+      }
+      panel.classList.add("show");
     }
 
     async function loadList() {
@@ -151,20 +283,51 @@
       });
     }
 
+    function renderBanner() {
+      if (!lastLog) {
+        return `<div class="sync-banner">最近同步：尚未有同步记录。可点击「重新同步」或开启 OA_SYNC_ON_LOGIN。</div>`;
+      }
+      const tip =
+        lastLog.status === "partial"
+          ? `<div style="margin-top:4px;color:var(--warning)">部分模块同步失败，已保留成功同步的数据。</div>`
+          : lastLog.status === "failed"
+          ? `<div style="margin-top:4px;color:var(--danger)">${escapeHtml(
+              lastLog.error_summary || "同步失败"
+            )}</div>`
+          : "";
+      return `<div class="sync-banner ${bannerClass()}">
+        <div>
+          最近同步：<strong>${fmtTime(lastLog.finished_at || lastLog.created_at)}</strong>
+          · ${statusBadge(lastLog.status)}
+          · ${triggerLabel(lastLog.trigger)}
+          · 新增 ${lastLog.imported} / 更新 ${lastLog.updated} / 合计 ${lastLog.total}
+        </div>
+        ${tip}
+        ${moduleChipsFromLog(lastLog)}
+      </div>`;
+    }
+
     async function load() {
       root.innerHTML = `<p class="hint">加载中…</p>`;
       try {
-        await loadStats();
+        await Promise.all([loadStats(), loadLastLog()]);
         root.innerHTML = `
+          ${renderBanner()}
           <div class="toolbar">
-            <span class="hint">最近同步（当前模块）：<strong id="syncInfo">${escapeHtml(
-              lastSyncText()
-            )}</strong>
-            · 本模块记录 <strong>${totalFor(activeModule)}</strong> 条</span>
+            <span class="hint">当前模块记录 <strong>${totalFor(activeModule)}</strong> 条
+            · 列表最近同步时间 <strong>${escapeHtml(lastSyncText())}</strong></span>
             <div class="spacer"></div>
             <input type="text" id="kw" placeholder="标题 / 文号 / 来源" style="width:200px" />
             <button class="btn" type="button" id="btnSearch">查询</button>
+            <button class="btn" type="button" id="btnLogs">同步记录</button>
             <button class="btn btn-primary" type="button" id="btnSync">重新同步</button>
+          </div>
+          <div class="log-panel" id="logPanel">
+            <div class="panel-hd" style="padding:8px 12px;border-bottom:1px solid var(--border);background:#f6f8fa;font-weight:600">
+              同步记录（最近 15 条）
+              <button type="button" class="btn btn-sm" id="btnCloseLogs" style="float:right">收起</button>
+            </div>
+            <div id="logBody"></div>
           </div>
           <div class="tabs" id="tabs">
             ${MODULES.map(
@@ -190,7 +353,7 @@
               </table>
             </div>
           </div>
-          <p class="hint">说明：第一版仅同步列表元数据，不下载附件/正文，不回写 OA。进入协同办理后在本系统完成审核流转。</p>
+          <p class="hint">说明：仅同步列表元数据，不下载附件/正文，不回写 OA。进入协同办理后在本系统完成审核流转。密码不写入本地存储与同步记录。</p>
           <div class="modal-mask" id="syncModalMask">
             <div class="modal" style="width:400px">
               <div class="modal-hd">
@@ -223,6 +386,10 @@
           if (e.key === "Enter") loadList();
         });
         document.getElementById("btnSync").onclick = doSync;
+        document.getElementById("btnLogs").onclick = toggleLogs;
+        document.getElementById("btnCloseLogs").onclick = () => {
+          document.getElementById("logPanel").classList.remove("show");
+        };
         document.getElementById("syncModalClose").onclick = closeSyncModal;
         document.getElementById("syncModalCancel").onclick = closeSyncModal;
         document.getElementById("syncModalOk").onclick = submitSync;

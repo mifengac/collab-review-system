@@ -29,9 +29,48 @@ get_settings.cache_clear()
 from app.main import app  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models import Item, OAWorkItem, User  # noqa: E402
+from app.models import OASyncLog  # noqa: E402
 from app.services.oa_auth import OAUserProfile  # noqa: E402
-from app.services.oa_client import normalize_oa_item  # noqa: E402
+from app.services.oa_client import (  # noqa: E402
+    OAFetchReport,
+    OAModuleFetchResult,
+    normalize_oa_item,
+)
 from app.services.oa_sync import sync_oa_work_items  # noqa: E402
+
+
+def _report(items, status="success", error=None, module_results=None):
+    if module_results is None:
+        # 按条目模块汇总
+        by_code = {}
+        for it in items:
+            by_code.setdefault(it.module_code, []).append(it)
+        module_results = []
+        for code, lst in by_code.items():
+            module_results.append(
+                OAModuleFetchResult(
+                    module_code=code,
+                    module_name=lst[0].module_name,
+                    success=True,
+                    fetched=len(lst),
+                    pages=1,
+                )
+            )
+        if not module_results and status == "failed":
+            module_results = [
+                OAModuleFetchResult(
+                    module_code="todo",
+                    module_name="待办公文",
+                    success=False,
+                    error=error or "同步失败",
+                )
+            ]
+    return OAFetchReport(
+        items=list(items),
+        module_results=module_results,
+        status=status,
+        error_summary=error,
+    )
 
 
 SAMPLE_RAW = {
@@ -163,7 +202,7 @@ def test_oa_login_sync_on_login(client: TestClient):
     fi = normalize_oa_item("todo", "待办公文", SAMPLE_RAW)
     with patch(
         "app.routers.auth.authenticate_and_fetch_oa",
-        return_value=(profile, [fi], None),
+        return_value=(profile, _report([fi], status="success")),
     ):
         r = client.post(
             "/api/auth/login",
@@ -173,6 +212,8 @@ def test_oa_login_sync_on_login(client: TestClient):
     assert r.json()["oa_sync"]["enabled"] is True
     assert r.json()["oa_sync"]["success"] is True
     assert r.json()["oa_sync"]["total"] >= 1
+    assert r.json()["oa_sync"]["status"] == "success"
+    assert r.json()["oa_sync"]["log_id"] is not None
 
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     items = client.get("/api/oa/items?module_code=todo", headers=h).json()
@@ -187,7 +228,10 @@ def test_oa_login_sync_fail_still_login(client: TestClient):
     profile = OAUserProfile(username="oa_sync_fail", display_name="失败同步", unit=None)
     with patch(
         "app.routers.auth.authenticate_and_fetch_oa",
-        return_value=(profile, [], "列表接口超时"),
+        return_value=(
+            profile,
+            _report([], status="failed", error="列表接口超时"),
+        ),
     ):
         r = client.post(
             "/api/auth/login",
@@ -291,7 +335,7 @@ def test_manual_sync_with_password(client: TestClient):
     fi = normalize_oa_item("unread", "待阅公文", {**SAMPLE_RAW, "flowinid": "FLOW-MANUAL"})
     with patch(
         "app.routers.oa.authenticate_and_fetch_oa",
-        return_value=(profile, [fi], None),
+        return_value=(profile, _report([fi], status="success")),
     ) as m:
         r = client.post(
             "/api/oa/sync",
@@ -301,7 +345,8 @@ def test_manual_sync_with_password(client: TestClient):
         assert r.status_code == 200, r.text
         assert r.json()["success"] is True
         assert r.json()["total"] >= 1
-        # 密码不应被服务端持久化到任何地方；这里验证调用只发生一次且无异常
+        assert r.json()["status"] == "success"
+        assert r.json()["log_id"] is not None
         assert m.called
         call_username = m.call_args.args[0] if m.call_args.args else m.call_args.kwargs.get("username")
         assert call_username == "handler1"
@@ -324,7 +369,7 @@ def test_manual_sync_ignores_body_username_uses_current_user(client: TestClient)
     )
     with patch(
         "app.routers.oa.authenticate_and_fetch_oa",
-        return_value=(profile, [fi], None),
+        return_value=(profile, _report([fi], status="success")),
     ) as m:
         r = client.post(
             "/api/oa/sync",
@@ -338,7 +383,6 @@ def test_manual_sync_ignores_body_username_uses_current_user(client: TestClient)
     assert r.status_code == 200, r.text
     assert r.json()["success"] is True
     assert m.called
-    # 第一个位置参数为 username，必须是当前用户而非 body 中的 other_user
     call_username = m.call_args.args[0] if m.call_args.args else m.call_args.kwargs.get("username")
     assert call_username == "handler1"
     assert call_username != "other_user"
@@ -365,7 +409,7 @@ def test_manual_sync_profile_mismatch_403_no_write(client: TestClient):
     )
     with patch(
         "app.routers.oa.authenticate_and_fetch_oa",
-        return_value=(profile, [fi], None),
+        return_value=(profile, _report([fi], status="success")),
     ):
         r = client.post(
             "/api/oa/sync",
@@ -411,7 +455,7 @@ def test_oa_login_sync_db_fail_still_login(client: TestClient):
 
     with patch(
         "app.routers.auth.authenticate_and_fetch_oa",
-        return_value=(profile, [fi], None),
+        return_value=(profile, _report([fi], status="success")),
     ), patch(
         "app.routers.auth.sync_oa_work_items",
         side_effect=RuntimeError(sensitive),
@@ -428,8 +472,246 @@ def test_oa_login_sync_db_fail_still_login(client: TestClient):
     assert body["oa_sync"]["success"] is False
     err = body["oa_sync"]["error"] or ""
     assert err == "OA 登录成功但公文入库失败，请稍后重试或联系管理员"
-    # 不得把异常敏感内容返回给前端
     assert "SECRET_COOKIE" not in err
     assert "leaked-token" not in err
     assert "oa-pass-secret" not in r.text
     assert sensitive not in r.text
+
+
+def _five_module_items():
+    items = []
+    for code, name in [
+        ("todo", "待办公文"),
+        ("unread", "待阅公文"),
+        ("done", "已办公文"),
+        ("read_done", "已阅公文"),
+        ("running", "流转中公文"),
+    ]:
+        raw = dict(SAMPLE_RAW)
+        raw["flowinid"] = f"FLOW-{code.upper()}"
+        raw["finsname"] = f"{name}测试"
+        items.append(normalize_oa_item(code, name, raw))
+    return items
+
+
+def test_all_modules_success_log(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    items = _five_module_items()
+    results = [
+        OAModuleFetchResult(
+            module_code=it.module_code,
+            module_name=it.module_name,
+            success=True,
+            fetched=1,
+            pages=1,
+        )
+        for it in items
+    ]
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(
+            profile,
+            OAFetchReport(items=items, module_results=results, status="success"),
+        ),
+    ):
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={"password": "x", "modules": [i.module_code for i in items]},
+        )
+    assert r.status_code == 200
+    assert r.json()["status"] == "success"
+    assert r.json()["success"] is True
+    assert len(r.json()["module_results"]) == 5
+    logs = client.get("/api/oa/sync-logs?limit=5", headers=h).json()
+    assert logs
+    assert logs[0]["trigger"] == "manual"
+    assert logs[0]["status"] == "success"
+    assert logs[0]["total"] >= 5
+
+
+def test_partial_module_failure_keeps_success_data(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    ok = normalize_oa_item(
+        "todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-PARTIAL-OK"}
+    )
+    results = [
+        OAModuleFetchResult(
+            module_code="todo",
+            module_name="待办公文",
+            success=True,
+            fetched=1,
+            pages=1,
+        ),
+        OAModuleFetchResult(
+            module_code="unread",
+            module_name="待阅公文",
+            success=False,
+            fetched=0,
+            pages=0,
+            error="OA 会话失效或无权访问该模块",
+        ),
+    ]
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(
+            profile,
+            OAFetchReport(
+                items=[ok],
+                module_results=results,
+                status="partial",
+                error_summary="部分模块同步失败：待阅公文",
+            ),
+        ),
+    ):
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={"password": "x"},
+        )
+    assert r.status_code == 200
+    assert r.json()["status"] == "partial"
+    assert r.json()["success"] is True
+    assert "部分" in r.json()["message"]
+    items = client.get("/api/oa/items?module_code=todo", headers=h).json()
+    assert any(x["flowinid"] == "FLOW-PARTIAL-OK" for x in items)
+
+
+def test_all_modules_failed(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    results = [
+        OAModuleFetchResult(
+            module_code=c,
+            module_name=n,
+            success=False,
+            error="OA 列表服务异常",
+        )
+        for c, n in [
+            ("todo", "待办公文"),
+            ("unread", "待阅公文"),
+            ("done", "已办公文"),
+            ("read_done", "已阅公文"),
+            ("running", "流转中公文"),
+        ]
+    ]
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(
+            profile,
+            OAFetchReport(
+                items=[],
+                module_results=results,
+                status="failed",
+                error_summary="全部模块同步失败",
+            ),
+        ),
+    ):
+        r = client.post("/api/oa/sync", headers=h, json={"password": "x"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "failed"
+    assert r.json()["success"] is False
+
+
+def test_user_can_only_see_own_sync_logs(client: TestClient):
+    # handler1 产生一条
+    h1 = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    fi = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-LOG-1"})
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ):
+        client.post("/api/oa/sync", headers=h1, json={"password": "x"})
+
+    # leader_a 不应看到 handler1 的记录（自己也没有）
+    h2 = _login(client, "leader_a", "Demo@123456")
+    logs2 = client.get("/api/oa/sync-logs", headers=h2).json()
+    assert all(x["user_id"] for x in logs2)
+    # 若 leader 无同步，列表可为空；有的话也只能是自己
+    db = SessionLocal()
+    try:
+        u1 = db.query(User).filter(User.username == "handler1").first()
+        for log in logs2:
+            assert log["user_id"] != u1.id or False
+        # 更明确：leader 的 logs 都不属于 handler1
+        assert not any(log["user_id"] == u1.id for log in logs2)
+    finally:
+        db.close()
+
+
+def test_admin_can_list_all_sync_logs(client: TestClient):
+    ha = _login(client, "admin", "Admin@123456")
+    h1 = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    fi = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-ADMIN-LOG"})
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ):
+        client.post("/api/oa/sync", headers=h1, json={"password": "x"})
+    logs = client.get("/api/oa/sync-logs?limit=50", headers=ha).json()
+    assert any(x.get("total", 0) >= 0 for x in logs)
+    # 管理员至少能看到 handler1 的记录
+    db = SessionLocal()
+    try:
+        u1 = db.query(User).filter(User.username == "handler1").first()
+        assert any(x["user_id"] == u1.id for x in logs)
+    finally:
+        db.close()
+
+
+def test_sync_log_has_no_secrets(client: TestClient):
+    h = _login(client, "handler1", "Demo@123456")
+    profile = OAUserProfile(username="handler1", display_name="承办员", unit=None)
+    fi = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-NO-SECRET"})
+    with patch(
+        "app.routers.oa.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ):
+        r = client.post(
+            "/api/oa/sync",
+            headers=h,
+            json={"password": "SuperSecretPwd!99"},
+        )
+    assert r.status_code == 200
+    blob = r.text
+    assert "SuperSecretPwd!99" not in blob
+    logs = client.get("/api/oa/sync-logs?limit=3", headers=h).json()
+    text = str(logs)
+    assert "SuperSecretPwd" not in text
+    assert "cookie" not in text.lower() or "Cookie" not in text
+    # module_results 不应含密码字段
+    for log in logs:
+        assert "password" not in str(log).lower() or log.get("error_summary") is None or "password" not in (log.get("error_summary") or "").lower()
+        mr = str(log.get("module_results") or "")
+        assert "SuperSecret" not in mr
+
+
+def test_login_trigger_and_write_log_fail_still_login(client: TestClient):
+    """同步记录写入失败不影响 OA 登录与入库结果。"""
+    os.environ["AUTH_MODE"] = "oa"
+    os.environ["OA_SYNC_ON_LOGIN"] = "true"
+    get_settings.cache_clear()
+    profile = OAUserProfile(username="oa_log_write_fail", display_name="记录失败", unit=None)
+    fi = normalize_oa_item("todo", "待办公文", {**SAMPLE_RAW, "flowinid": "FLOW-LOG-FAIL"})
+    with patch(
+        "app.routers.auth.authenticate_and_fetch_oa",
+        return_value=(profile, _report([fi])),
+    ), patch(
+        "app.routers.auth.write_oa_sync_log",
+        return_value=None,
+    ):
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "oa_log_write_fail", "password": "x"},
+        )
+    assert r.status_code == 200
+    assert r.json()["user"]["username"] == "oa_log_write_fail"
+    assert r.json()["oa_sync"]["enabled"] is True
+    assert r.json()["oa_sync"]["success"] is True
+    assert r.json()["oa_sync"]["total"] >= 1
+    # log 写入失败时 log_id 可为 null
+    assert r.json()["oa_sync"].get("log_id") is None

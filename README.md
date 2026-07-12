@@ -134,7 +134,9 @@ OA_LIST_PATH=/hmoa/s
 - 列表同步失败 **不影响登录**。  
 - 不保存 OA 密码/cookie；手动「重新同步」需本次输入密码。  
 - 前端：**OA 公文池**（`/oa_items.html`）→「进入协同办理」→ 创建/打开事项。  
-- **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。
+- **模块级诊断**：每个模块独立统计成功/失败；部分失败时状态为 `partial`，成功数据仍入库；记录见 `oa_sync_logs` 与 `GET /api/oa/sync-logs`。  
+- **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。  
+- 交接文档唯一入口：`DEVELOPMENT_HANDOFF.md`。
 
 ## 角色与权限
 
@@ -328,6 +330,7 @@ DATABASE_URL=postgresql://user:password@host:54321/collab_review
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/oa/items` | 当前用户公文池列表（可按模块/关键词筛选） |
+| GET | `/api/oa/sync-logs` | 同步诊断记录（用户仅自己；管理员可看全部） |
 | GET | `/api/oa/stats` | 各模块数量与最近同步时间 |
 | POST | `/api/oa/sync` | 手动同步（本次输入 OA 密码；**忽略请求体 username**，仅用当前登录用户） |
 | POST | `/api/oa/items/{id}/create-collab` | 从公文创建/打开协同事项 |
@@ -369,6 +372,7 @@ DATABASE_URL=postgresql://user:password@host:54321/collab_review
 | GET | `/api/dict/tags` | 业务标签 |
 | GET | `/api/oa/items` | OA 公文池列表 |
 | GET | `/api/oa/stats` | 各模块数量 |
+| GET | `/api/oa/sync-logs` | 同步诊断记录 |
 | GET | `/api/oa/inbox` | 待办摘要（兼容） |
 | POST | `/api/oa/sync` | 手动同步（需本次 OA 密码） |
 | POST | `/api/oa/items/{id}/create-collab` | 从公文创建/打开事项 |
