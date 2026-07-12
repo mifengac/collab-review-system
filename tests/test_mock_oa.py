@@ -35,12 +35,14 @@ from app.mock_oa import (  # noqa: E402
     app as mock_app,
     clear_sessions,
     get_module_counts,
+    resolve_module_strict,
 )
 from app.services.oa_auth import _parse_profile  # noqa: E402
 from app.services.oa_client import (  # noqa: E402
     OA_WORK_MODULES,
     _compute_report_status,
     fetch_oa_work_items_report,
+    module_query_params,
 )
 from app.services.oa_client import OAModuleFetchResult  # noqa: E402
 
@@ -85,30 +87,20 @@ def test_mock_login_wrong_password(mock_client: TestClient):
     assert r2.status_code == 401
 
 
+def _list_params(code: str) -> dict:
+    """从 OA_WORK_MODULES 生成列表 query（去掉 noReportLog 也可；保留完整一致）。"""
+    return dict(module_query_params(code))
+
+
 def test_mock_five_modules_mapping(mock_client: TestClient):
     _login_mock(mock_client)
-    mapping = {
-        "todo": {"service": "flowDealingList"},
-        "unread": {"service": "flowUnreadList"},
-        "done": {"service": "flowDealingList", "taskType": "1"},
-        "read_done": {
-            "service": "flowUnreadList",
-            "taskType": "3",
-            "readFlag": "1",
-        },
-        "running": {
-            "service": "flowDealingList",
-            "taskType": "-1",
-            "readFlag": "0",
-        },
-    }
-    for code, params in mapping.items():
+    for code in ("todo", "unread", "done", "read_done", "running"):
         r = mock_client.post(
             "/hmoa/s",
-            params=params,
+            params=_list_params(code),
             data={"page": "1", "showOnlyMe": "false", "orderOption": "1"},
         )
-        assert r.status_code == 200, code
+        assert r.status_code == 200, (code, r.text)
         body = r.json()
         assert "result" in body and "totalCount" in body
         assert body["totalCount"] == MODULE_COUNTS[code]
@@ -122,17 +114,11 @@ def test_mock_five_modules_mapping(mock_client: TestClient):
 
 def test_mock_page_size_and_page2(mock_client: TestClient):
     _login_mock(mock_client)
-    r1 = mock_client.post(
-        "/hmoa/s",
-        params={"service": "flowDealingList"},
-        data={"page": "1"},
-    )
-    r2 = mock_client.post(
-        "/hmoa/s",
-        params={"service": "flowDealingList"},
-        data={"page": "2"},
-    )
+    q = _list_params("todo")
+    r1 = mock_client.post("/hmoa/s", params=q, data={"page": "1"})
+    r2 = mock_client.post("/hmoa/s", params=q, data={"page": "2"})
     b1, b2 = r1.json(), r2.json()
+    assert r1.status_code == 200 and r2.status_code == 200
     assert len(b1["result"]) == 10
     assert len(b2["result"]) == 10
     ids1 = {x["flowinid"] for x in b1["result"]}
@@ -143,17 +129,72 @@ def test_mock_page_size_and_page2(mock_client: TestClient):
 
 def test_mock_todo_full_pagination(mock_client: TestClient):
     _login_mock(mock_client)
+    q = _list_params("todo")
     all_ids = []
     for page in (1, 2, 3):
-        r = mock_client.post(
-            "/hmoa/s",
-            params={"service": "flowDealingList"},
-            data={"page": str(page)},
-        )
+        r = mock_client.post("/hmoa/s", params=q, data={"page": str(page)})
+        assert r.status_code == 200
         rows = r.json()["result"]
         all_ids.extend([x["flowinid"] for x in rows])
     assert len(all_ids) == 23
     assert len(set(all_ids)) == 23
+
+
+def test_mock_rejects_missing_or_wrong_params(mock_client: TestClient):
+    """缺少/错误 taskType、readFlag 必须 400，且不得返回其他模块数据。"""
+    _login_mock(mock_client)
+    cases = [
+        # todo 缺少 taskType=0
+        {"service": "flowDealingList"},
+        # unread 缺少 taskType=3
+        {"service": "flowUnreadList", "readFlag": "0"},
+        # unread 缺少 readFlag=0
+        {"service": "flowUnreadList", "taskType": "3"},
+        # read_done 错误传 readFlag=0（那是 unread）
+        # 注意：readFlag=0 + taskType=3 是合法 unread，此处测「想读已阅却传 0」
+        # 用 read_done 期望但传 readFlag=0 会映射到 unread 成功——改为传错误 taskType
+        {"service": "flowUnreadList", "taskType": "3", "readFlag": "9"},
+        # running 缺少 taskType=-1
+        {"service": "flowDealingList", "readFlag": "0"},
+        # running 缺少 readFlag=0
+        {"service": "flowDealingList", "taskType": "-1"},
+        # todo 误用 taskType=1 不是宽松成 done 时的缺失（这里明确错误组合）
+        {"service": "flowDealingList", "taskType": "99"},
+    ]
+    for params in cases:
+        r = mock_client.post("/hmoa/s", params=params, data={"page": "1"})
+        assert r.status_code == 400, params
+        body = r.json()
+        assert body.get("success") is False
+        assert "不匹配" in (body.get("message") or "")
+        assert "password" not in str(body).lower()
+        assert "cookie" not in str(body).lower()
+        assert "token" not in str(body).lower()
+        assert "result" not in body or body.get("result") in (None, [])
+
+
+def test_mock_wrong_read_flag_not_return_other_module_data(mock_client: TestClient):
+    """read_done 传 readFlag=0 会匹配 unread，属合法另一模块；错误参数不得混返回。"""
+    _login_mock(mock_client)
+    # 明确错误：taskType 与 service 组合不存在
+    r = mock_client.post(
+        "/hmoa/s",
+        params={"service": "flowUnreadList", "taskType": "0", "readFlag": "1"},
+        data={"page": "1"},
+    )
+    assert r.status_code == 400
+    assert r.json().get("success") is False
+
+
+def test_resolve_module_strict_helpers():
+    assert resolve_module_strict("flowDealingList", "0", None) == "todo"
+    assert resolve_module_strict("flowUnreadList", "3", "0") == "unread"
+    assert resolve_module_strict("flowDealingList", "1", None) == "done"
+    assert resolve_module_strict("flowUnreadList", "3", "1") == "read_done"
+    assert resolve_module_strict("flowDealingList", "-1", "0") == "running"
+    assert resolve_module_strict("flowDealingList", None, None) is None
+    assert resolve_module_strict("flowUnreadList", "3", None) is None
+    assert resolve_module_strict("flowDealingList", "-1", None) is None
 
 
 def test_mock_data_no_real_har_secrets(mock_client: TestClient):
@@ -169,13 +210,13 @@ def test_mock_data_no_real_har_secrets(mock_client: TestClient):
         "oa.har",
     ]
     blob_parts = []
-    for code, cfg in OA_WORK_MODULES.items():
-        q = dict(cfg.get("query") or {})
+    for code in OA_WORK_MODULES:
         r = mock_client.post(
             "/hmoa/s",
-            params=q,
+            params=_list_params(code),
             data={"page": "1"},
         )
+        assert r.status_code == 200, code
         blob_parts.append(r.text)
     # 全部虚构数据
     full = "\n".join(blob_parts)

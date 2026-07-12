@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 构建并启动 Docker 预览环境（主应用 + 模拟 OA）
-# 与正式 5009 服务隔离；不读取正式 .env
+# 构建并启动 Docker 预览环境（主应用 + 模拟 OA）+ 自动冒烟
+# 与正式 5009 服务隔离；不读取正式 .env；默认保留 preview 数据卷
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,9 +12,11 @@ APP_NAME="collab-review-preview"
 MOCK_NAME="collab-review-mock-oa"
 VOL_DATA="collab_preview_data"
 VOL_UPLOADS="collab_preview_uploads"
-PREVIEW_PORT="${PREVIEW_PORT:-5010}"
+export PREVIEW_PORT="${PREVIEW_PORT:-5010}"
 MOCK_PORT_INTERNAL=5099
 APP_PORT_INTERNAL=5009
+FORMAL_NAME="collab-review-system"
+FORMAL_PORT=5009
 
 COMPOSE_FILE="docker-compose.preview.yml"
 
@@ -50,14 +52,70 @@ wait_http() {
   return 1
 }
 
+port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -lnt 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" >/dev/null 2>&1
+    return $?
+  fi
+  # 回退：尝试绑定检测
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$port" <<'PY'
+import socket, sys
+p = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("0.0.0.0", p))
+except OSError:
+    sys.exit(0)  # in use
+else:
+    s.close()
+    sys.exit(1)  # free
+PY
+    return $?
+  fi
+  return 1
+}
+
+preview_owns_port() {
+  # 当前预览主容器是否占用 PREVIEW_PORT
+  docker ps --filter "name=^/${APP_NAME}$" --format '{{.Ports}}' 2>/dev/null \
+    | grep -E "(^|[^0-9])${PREVIEW_PORT}->" >/dev/null 2>&1
+}
+
+check_preview_port() {
+  if [ "$PREVIEW_PORT" = "$FORMAL_PORT" ]; then
+    err "PREVIEW_PORT 不能使用正式服务端口 ${FORMAL_PORT}"
+    exit 1
+  fi
+  if ! port_in_use "$PREVIEW_PORT"; then
+    log "预览端口 ${PREVIEW_PORT} 可用"
+    return 0
+  fi
+  if preview_owns_port; then
+    log "端口 ${PREVIEW_PORT} 由旧预览容器占用，将强制重建"
+    return 0
+  fi
+  err "端口 ${PREVIEW_PORT} 已被其他进程/容器占用，请更换 PREVIEW_PORT 或释放端口"
+  err "不会删除无关容器；正式服务端口 ${FORMAL_PORT} 不受影响"
+  exit 1
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   err "未找到 docker 命令，无法启动预览环境"
   exit 1
 fi
 
 log "工作目录: $ROOT"
-log "构建镜像 $IMAGE_NAME （强制最新代码，不复用旧层语义由 build 保证）"
+log "PREVIEW_PORT=${PREVIEW_PORT}"
+check_preview_port
 
+log "构建镜像 $IMAGE_NAME （强制最新代码）"
 docker build -t "$IMAGE_NAME" "$ROOT"
 IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME" 2>/dev/null | sed 's/^sha256://' | cut -c1-12 || true)"
 log "镜像: $IMAGE_NAME  ID=${IMAGE_ID:-unknown}"
@@ -65,7 +123,7 @@ log "镜像: $IMAGE_NAME  ID=${IMAGE_ID:-unknown}"
 COMPOSE_CMD="$(detect_compose)"
 
 if [ -n "$COMPOSE_CMD" ]; then
-  log "使用 $COMPOSE_CMD 启动预览栈"
+  log "使用 $COMPOSE_CMD 启动预览栈（export PREVIEW_PORT=${PREVIEW_PORT}）"
   # shellcheck disable=SC2086
   $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate
 else
@@ -91,7 +149,7 @@ else
     "$IMAGE_NAME" \
     uvicorn app.mock_oa:app --host 0.0.0.0 --port "$MOCK_PORT_INTERNAL"
 
-  docker run -d \
+  if ! docker run -d \
     --name "$APP_NAME" \
     --network "$NETWORK" \
     --restart unless-stopped \
@@ -130,17 +188,19 @@ else
     --health-retries 8 \
     --health-start-period 25s \
     "$IMAGE_NAME"
+  then
+    err "主预览容器启动失败（可能端口 ${PREVIEW_PORT} 占用）"
+    docker rm -f "$APP_NAME" 2>/dev/null || true
+    exit 1
+  fi
 fi
 
-# 容器内健康 + 宿主可访问检查
 log "等待容器就绪…"
 sleep 3
 
-# 模拟 OA 仅在内部网络；通过 docker exec 检查
 if ! docker exec "$MOCK_NAME" curl -fsS "http://127.0.0.1:${MOCK_PORT_INTERNAL}/api/health" >/dev/null 2>&1; then
-  # 等待更久
   ok=0
-  for i in $(seq 1 30); do
+  for _i in $(seq 1 30); do
     if docker exec "$MOCK_NAME" curl -fsS "http://127.0.0.1:${MOCK_PORT_INTERNAL}/api/health" >/dev/null 2>&1; then
       ok=1
       break
@@ -160,10 +220,21 @@ wait_http "http://127.0.0.1:${PREVIEW_PORT}/api/health" "主应用 /api/health" 
 wait_http "http://127.0.0.1:${PREVIEW_PORT}/login.html" "login.html" 15
 wait_http "http://127.0.0.1:${PREVIEW_PORT}/oa_items.html" "oa_items.html" 15
 
+log "执行预览冒烟验收 scripts/preview-smoke.py"
+SMOKE_PY="${ROOT}/.venv/bin/python"
+if [ ! -x "$SMOKE_PY" ]; then
+  SMOKE_PY="python3"
+fi
+if ! "$SMOKE_PY" "${ROOT}/scripts/preview-smoke.py" --base-url "http://127.0.0.1:${PREVIEW_PORT}"; then
+  err "预览冒烟测试失败，预览环境未就绪"
+  exit 1
+fi
+
 APP_STATUS="$(docker inspect -f '{{.State.Status}}' "$APP_NAME" 2>/dev/null || echo unknown)"
 MOCK_STATUS="$(docker inspect -f '{{.State.Status}}' "$MOCK_NAME" 2>/dev/null || echo unknown)"
 APP_HEALTH="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$APP_NAME" 2>/dev/null || echo n/a)"
 MOCK_HEALTH="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}' "$MOCK_NAME" 2>/dev/null || echo n/a)"
+FORMAL_STATUS="$(docker inspect -f '{{.State.Status}}' "$FORMAL_NAME" 2>/dev/null || echo n/a)"
 
 echo ""
 echo "======== 预览环境已就绪 ========"
@@ -171,13 +242,15 @@ echo "镜像名称: $IMAGE_NAME"
 echo "镜像 ID:  ${IMAGE_ID:-unknown}"
 echo "主容器:   $APP_NAME  status=$APP_STATUS health=$APP_HEALTH"
 echo "模拟 OA:  $MOCK_NAME  status=$MOCK_STATUS health=$MOCK_HEALTH"
+echo "正式容器: $FORMAL_NAME status=$FORMAL_STATUS （未改动）"
 echo "预览地址: http://127.0.0.1:${PREVIEW_PORT}/login.html"
 echo "API 健康: http://127.0.0.1:${PREVIEW_PORT}/api/health"
+echo "正式地址: http://127.0.0.1:${FORMAL_PORT}/login.html"
 echo ""
 echo "模拟登录账号（公开演示密码，见 README）："
 echo "  handler1 / leader_a / leader_b / office1 / supervisor1"
 echo "  admin（管理员演示密码，见 README）"
-echo "说明: AUTH_MODE=oa，登录后自动同步模拟公文池"
+echo "说明: AUTH_MODE=oa，登录后自动同步模拟公文池；冒烟已通过"
 echo "停止: bash scripts/preview-down.sh"
 echo "================================"
 exit 0

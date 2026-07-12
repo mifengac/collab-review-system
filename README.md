@@ -112,13 +112,18 @@ OA_PRECHECK_ENABLED=false
 
 用户 **OA 登录成功** 后（可选），在同一会话内拉取五个公文模块列表，写入本系统 `oa_work_items` 表（OA 公文池）。**不会**自动为每条公文创建协同事项。
 
-| module_code | 名称 | OA service（可配置） |
+| module_code | 名称 | `/hmoa/s` query 要点 |
 |-------------|------|----------------------|
-| `todo` | 待办公文 | `flowDealingList` |
-| `unread` | 待阅公文 | `flowUnreadList` |
-| `done` | 已办公文 | `flowDealingList` + taskType=1 |
-| `read_done` | 已阅公文 | `flowUnreadList` + taskType/readFlag |
-| `running` | 流转中公文 | `flowDealingList` + taskType=-1 |
+| `todo` | 待办公文 | `service=flowDealingList` + **`taskType=0`** |
+| `unread` | 待阅公文 | `service=flowUnreadList` + **`taskType=3`** + **`readFlag=0`** |
+| `done` | 已办公文 | `service=flowDealingList` + **`taskType=1`** |
+| `read_done` | 已阅公文 | `service=flowUnreadList` + **`taskType=3`** + **`readFlag=1`** |
+| `running` | 流转中公文 | `service=flowDealingList` + **`taskType=-1`** + **`readFlag=0`** |
+
+> **参数来源说明（真实 OA 联调待内网验证）**  
+> - `taskType` / `readFlag`：来自 HAR 中 DashboardID 882–886 的 TaskList **页面入口**参数。  
+> - `service`：基于已观察到的 `/hmoa/s` 请求规律的**适配推断**，**不能**声称已在真实 OA 上完整验证。  
+> - 页面上的 `displayRow=20` **不会**直接传给 `/hmoa/s`；当前观测到的列表响应每页约 10 条，故 `OA_SYNC_PAGE_SIZE` 暂为 10。
 
 配置：
 
@@ -158,8 +163,14 @@ OA_MOCK_ENABLED=false           # 正式环境务必 false；仅开发预览可 
 | `OA_MOCK_ENABLED` | 默认 `false` | `true`（且 `DEBUG=true`） |
 
 ```bash
-# 构建最新镜像并启动预览（主应用 + 模拟 OA）
+# 构建最新镜像、启动预览，并自动跑冒烟验收
 bash scripts/preview-up.sh
+
+# 自定义宿主机端口（Compose 与 docker run 回退共用 PREVIEW_PORT）
+PREVIEW_PORT=5020 bash scripts/preview-up.sh
+
+# 单独重跑冒烟（容器已运行时）
+.venv/bin/python scripts/preview-smoke.py --base-url http://127.0.0.1:5010
 
 # 浏览器
 # http://127.0.0.1:5010/login.html
@@ -169,6 +180,8 @@ bash scripts/preview-down.sh
 # 同时删除预览数据卷：
 bash scripts/preview-down.sh --purge
 ```
+
+`preview-up.sh` 会：检测端口 → 构建 `collab-review-system:preview` → 强制重建预览容器 → 健康检查 → **`scripts/preview-smoke.py`**（登录、五类数量、截断、create-collab 幂等）。冒烟失败则整体非 0 退出。模拟 OA **严格校验** `taskType`/`readFlag`，错误参数返回 400，避免掩盖主应用错误请求。
 
 模拟登录账号（公开演示密码，与 `SEED_DEMO_USERS` 一致）：
 

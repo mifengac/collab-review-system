@@ -16,12 +16,24 @@ from app.services.oa_auth import OAAuthError, OAAuthUnavailable
 
 logger = logging.getLogger(__name__)
 
-# 模块请求策略（可按新 HAR 调整）
+# ---------------------------------------------------------------------------
+# 五类公文模块请求参数（集中定义，供 oa_client / mock_oa / 测试共用）
+#
+# 来源说明（请勿在文档外声称已完成真实 /hmoa/s 联调）：
+# - taskType / readFlag：来自 oa.har 中 DashboardID 882–886 的 TaskList 页面入口
+# - service：基于已观察到的 /hmoa/s 请求规律的适配推断
+# - 真实 OA 对 /hmoa/s 的完整 query/form 仍待内网抓包确认
+# - displayRow=20 仅为页面参数，不直接传给 /hmoa/s（观测到列表每页 10 条）
+# ---------------------------------------------------------------------------
 OA_WORK_MODULES: dict[str, dict[str, Any]] = {
     "todo": {
         "name": "待办公文",
         "service": "flowDealingList",
-        "query": {"noReportLog": "1", "service": "flowDealingList"},
+        "query": {
+            "noReportLog": "1",
+            "service": "flowDealingList",
+            "taskType": "0",
+        },
         "form": {
             "page": "{page}",
             "flowInstName": "",
@@ -32,7 +44,12 @@ OA_WORK_MODULES: dict[str, dict[str, Any]] = {
     "unread": {
         "name": "待阅公文",
         "service": "flowUnreadList",
-        "query": {"noReportLog": "1", "service": "flowUnreadList"},
+        "query": {
+            "noReportLog": "1",
+            "service": "flowUnreadList",
+            "taskType": "3",
+            "readFlag": "0",
+        },
         "form": {
             "page": "{page}",
             "flowInstName": "",
@@ -43,8 +60,16 @@ OA_WORK_MODULES: dict[str, dict[str, Any]] = {
     "done": {
         "name": "已办公文",
         "service": "flowDealingList",
-        "query": {"noReportLog": "1", "service": "flowDealingList", "taskType": "1"},
-        "form": {"page": "{page}", "showOnlyMe": "false", "orderOption": "1"},
+        "query": {
+            "noReportLog": "1",
+            "service": "flowDealingList",
+            "taskType": "1",
+        },
+        "form": {
+            "page": "{page}",
+            "showOnlyMe": "false",
+            "orderOption": "1",
+        },
     },
     "read_done": {
         "name": "已阅公文",
@@ -71,9 +96,25 @@ OA_WORK_MODULES: dict[str, dict[str, Any]] = {
             "taskType": "-1",
             "readFlag": "0",
         },
-        "form": {"page": "{page}", "showOnlyMe": "false", "orderOption": "1"},
+        "form": {
+            "page": "{page}",
+            "showOnlyMe": "false",
+            "orderOption": "1",
+        },
     },
 }
+
+
+def module_query_params(module_code: str) -> dict[str, str]:
+    """返回某模块发往 /hmoa/s 的 query 参数（不含 page）。"""
+    cfg = OA_WORK_MODULES.get(module_code) or {}
+    return {str(k): str(v) for k, v in (cfg.get("query") or {}).items()}
+
+
+def module_form_template(module_code: str) -> dict[str, str]:
+    """返回某模块 form 模板（page 为 {page} 占位）。"""
+    cfg = OA_WORK_MODULES.get(module_code) or {}
+    return {str(k): str(v) for k, v in (cfg.get("form") or {}).items()}
 
 # 敏感字段名（含子串匹配用）
 _SENSITIVE_KEY_NAMES = frozenset(

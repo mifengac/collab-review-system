@@ -58,7 +58,7 @@
 - OA 公文池同步
 - 从 OA 公文池创建协同事项
 
-当前基线：以 `main` 最新为准（本轮：旧库 migrate 失败硬停 + 模拟 OA Docker 预览 + 分页默认 10 / truncated→partial）。
+当前基线：以 `main` 最新为准（本轮：五类模块 taskType/readFlag 对齐页面入口 + 模拟 OA 严格参数 + preview-smoke + PREVIEW_PORT）。
 
 近期相关提交：
 
@@ -334,35 +334,70 @@ HAR 中观察到的列表入口：
 
 演示账号：`handler1` 等公开演示密码（见 README），**不得**使用真实 OA 密码。数据全部虚构，**禁止**提交 `oa.har`。
 
-### 7.4 真实 OA 联调检查表（待内网验证）
+### 7.4 五类模块参数（本轮）
 
-> 本机未连接真实 OA，**不得声称已完成真实联调**。
+集中定义于 `app/services/oa_client.py` → `OA_WORK_MODULES`：
 
-1. 分别确认五类模块是否成功：todo / unread / done / read_done / running。
-2. 记录每类返回数量（与 OA 端肉眼核对）。
-3. 检查分页：`OA_SYNC_MAX_PAGES` 是否拉全；truncated 时前端提示未清理旧记录。
-4. 同一公文重复同步：只更新、不重复新增。
-5. 公文从待办到已办：待办列表不再显示，已办可见。
-6. 已创建协同事项的 `linked_item_id` 不被覆盖；inactive 后事项仍可访问。
-7. 若某模块失败：记录模块名称、HTTP 状态、同步记录短中文错误（勿提交响应/HAR）。
-8. 严禁提交：真实 OA 账号密码、Cookie、Token、完整响应、HAR。
-9. 调整 `OA_WORK_MODULES` 须以**内网最新 HAR** 为依据并补 mock 测试。
+| 模块 | service | taskType | readFlag |
+|------|---------|----------|----------|
+| todo | flowDealingList | **0** | （不传） |
+| unread | flowUnreadList | **3** | **0** |
+| done | flowDealingList | **1** | （不传） |
+| read_done | flowUnreadList | **3** | **1** |
+| running | flowDealingList | **-1** | **0** |
 
-### 7.5 继续开发优先文件
+- taskType/readFlag：来自 HAR Dashboard 882–886 TaskList **页面入口**。  
+- service：适配推断。  
+- **真实 `/hmoa/s` 参数仍标记：待内网验证。**  
+- 模拟 OA `resolve_module_strict` 与上表一致；缺参/错参 → HTTP 400，不猜模块。  
+- `scripts/preview-smoke.py`：登录后校验五类数量、running 截断、create-collab 幂等；不打印 Token/密码。  
+- `PREVIEW_PORT`：compose 使用 `${PREVIEW_PORT:-5010}:5009`；`preview-up.sh` 会 export。
 
-- `app/services/oa_client.py` / `oa_sync.py` / `oa_auth.py`
-- `app/database.py`（`migrate_schema`）
-- `app/mock_oa.py` / `docker-compose.preview.yml` / `scripts/preview-*.sh`
+### 7.5 真实 OA 联调检查表（待内网验证）
+
+> 本机未连接真实 OA，**不得声称已完成真实联调**。状态：**真实 OA 联调待内网验证**。
+
+内网操作步骤：
+
+1. 登录真实 OA。  
+2. 依次打开 DashboardID **882、883、884、885、886**。  
+3. 每次等待列表数据**真正加载完成**。  
+4. 抓取紧随其后的 **`/hmoa/s`** 请求（不要只抓 TaskList 页面）。  
+5. 只记录脱敏后的：  
+   - service  
+   - taskType  
+   - readFlag  
+   - flowIds 是否存在  
+   - form 字段名  
+   - 单页返回数量  
+   - totalCount 是否存在  
+6. **不记录或提交**：账号、密码、Cookie、Token、内网 IP、公文标题、人员姓名、完整响应、原始 HAR。  
+7. 根据真实结果再修改 `OA_WORK_MODULES` 与模拟 OA 严格校验。  
+8. 未完成前继续标记「真实 OA 联调待内网验证」。
+
+功能核对（联调时）：
+
+1. 五类模块是否成功。  
+2. 每类数量与 OA 端肉眼核对。  
+3. 分页 / truncated 提示。  
+4. 重复同步不重复新增。  
+5. 待办→已办后列表与 is_active。  
+6. linked_item_id 不覆盖。
+
+### 7.6 继续开发优先文件
+
+- `app/services/oa_client.py`（`OA_WORK_MODULES`）/ `oa_sync.py` / `oa_auth.py`
+- `app/mock_oa.py`（严格参数）
+- `docker-compose.preview.yml` / `scripts/preview-up.sh` / `scripts/preview-smoke.py`
 - `app/routers/oa.py` / `auth.py`
-- `frontend/oa_items.html` / `login.html`
-- `tests/test_oa_sync.py` / `test_migrate_schema.py` / `test_mock_oa.py`
+- `tests/test_oa_modules.py` / `test_mock_oa.py` / `test_preview_smoke.py` / `test_preview_port.py`
 
 ## 8. 后续路线建议
 
 短期优先：
 
-1. 按 7.4 检查表完成内网真实 OA 联调（预览栈已可本地验证五类公文与 truncated）。
-2. 若某类公文不同步，抓 HAR 对比 `/hmoa/s` 参数后有依据地改 `OA_WORK_MODULES`。
+1. 按 **7.5** 检查表完成内网真实 OA 联调（**当前：待内网验证**）。
+2. 若某类公文不同步，抓 `/hmoa/s`（非仅 TaskList 页面）后有依据地改 `OA_WORK_MODULES`。
 3. 梳理本地账号与 OA `userCode` 是否一致；不一致则做管理员映射表，禁止任意 username。
 4. 后台增量同步（不要在登录时一次拉上万条历史）。
 

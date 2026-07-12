@@ -28,7 +28,8 @@ services:
     image: collab-review-system:preview
     container_name: collab-review-preview
     ports:
-      - "5010:5009"
+      # 由 preview-up.sh export PREVIEW_PORT；默认 5010，勿与正式 5009 冲突
+      - "${PREVIEW_PORT:-5010}:5009"
     environment:
       APP_NAME: "材料协同办理系统（预览）"
       APP_HOST: "0.0.0.0"

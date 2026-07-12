@@ -4,7 +4,8 @@
 - 不挂载到正式主应用路由
 - 不复制真实 HAR 中的账号、人员、单位、文号、Cookie、Token
 - 数据全部为「测试公文 / 测试单位 / 模拟承办人」等虚构内容
-- 日志不打印密码与 Cookie
+- 日志不打印密码、Cookie、Token 或完整请求体
+- 列表参数与 OA_WORK_MODULES 严格一致，拒绝宽松猜测
 """
 from __future__ import annotations
 
@@ -12,10 +13,11 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Form, Query, Request, Response
 from fastapi.responses import JSONResponse
+
+from app.services.oa_client import OA_WORK_MODULES
 
 logger = logging.getLogger(__name__)
 
@@ -153,23 +155,57 @@ def _dataset() -> dict[str, list[dict[str, Any]]]:
 _DATA = _dataset()
 
 
-def _resolve_module(service: str | None, task_type: str | None, read_flag: str | None) -> str | None:
-    """根据 service / taskType / readFlag 映射五类模块。"""
-    svc = (service or "").strip()
-    tt = (task_type if task_type is not None else "").strip()
-    rf = (read_flag if read_flag is not None else "").strip()
+def _norm(value: str | None) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s != "" else None
 
-    if svc == "flowUnreadList":
-        if tt == "3" or rf == "1":
-            return "read_done"
-        return "unread"
-    if svc == "flowDealingList":
-        if tt == "1":
-            return "done"
-        if tt == "-1":
-            return "running"
-        return "todo"
+
+def resolve_module_strict(
+    service: str | None,
+    task_type: str | None,
+    read_flag: str | None,
+) -> str | None:
+    """
+    严格按 OA_WORK_MODULES.query 匹配模块。
+    缺少必要 taskType/readFlag 时不猜测，返回 None。
+    不要求客户端传 noReportLog（仅业务键 service/taskType/readFlag）。
+    """
+    svc = _norm(service)
+    tt = _norm(task_type)
+    rf = _norm(read_flag)
+    if not svc:
+        return None
+
+    for code, cfg in OA_WORK_MODULES.items():
+        q = cfg.get("query") or {}
+        req_service = _norm(str(q.get("service") or ""))
+        if svc != req_service:
+            continue
+        # 模块定义中的 taskType / readFlag 必须全部精确匹配
+        if "taskType" in q:
+            if tt != _norm(str(q["taskType"])):
+                continue
+        elif tt is not None:
+            # 定义未要求 taskType 时，不允许附带其他 taskType（当前五类均有 taskType）
+            continue
+        if "readFlag" in q:
+            if rf != _norm(str(q["readFlag"])):
+                continue
+        # 定义无 readFlag 时：忽略客户端是否传 readFlag（done/todo 不依赖它）
+        return code
     return None
+
+
+def _param_error_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "success": False,
+            "message": "模拟 OA 请求参数不匹配",
+        },
+    )
 
 
 def _session_user(request: Request) -> str | None:
@@ -203,7 +239,6 @@ async def j_security_check(
     account = MOCK_ACCOUNTS.get(username)
     if not account or account["password"] != password:
         logger.info("mock OA login failed user=%s", username)
-        # 无 cookie，profile 将失败
         return Response(content="login failed", media_type="text/plain", status_code=200)
 
     sid = secrets.token_urlsafe(24)
@@ -234,7 +269,6 @@ async def get_module_tree(request: Request):
             status_code=401,
             content={"success": False, "message": "未登录"},
         )
-    # 结构可被 app.services.oa_auth._parse_profile 解析
     return {
         "success": True,
         "userInfo": {
@@ -266,7 +300,6 @@ async def list_work_items(
             content={"success": False, "message": "会话无效"},
         )
 
-    # 表单 page 优先；也兼容 query page
     page_raw = page
     try:
         form = await request.form()
@@ -280,16 +313,22 @@ async def list_work_items(
     except (TypeError, ValueError):
         page_i = 1
 
-    # query 中的 service/taskType/readFlag 为主
     q = request.query_params
-    svc = service or q.get("service")
+    svc = service if service is not None else q.get("service")
     tt = taskType if taskType is not None else q.get("taskType")
     rf = readFlag if readFlag is not None else q.get("readFlag")
 
-    module = _resolve_module(svc, tt, rf)
+    module = resolve_module_strict(svc, tt, rf)
     if not module:
-        logger.info("mock OA list unknown service=%s", svc)
-        return {"result": [], "totalCount": 0}
+        # 仅记录安全元信息，不打印 body / cookie
+        logger.info(
+            "mock OA list param mismatch service=%s taskType=%s readFlag=%s page=%s status=400",
+            _norm(svc),
+            _norm(tt),
+            _norm(rf),
+            page_i,
+        )
+        return _param_error_response()
 
     rows = _DATA.get(module) or []
     total = len(rows)
@@ -297,11 +336,11 @@ async def list_work_items(
     end = start + PAGE_SIZE
     batch = rows[start:end]
     logger.info(
-        "mock OA list module=%s page=%s count=%s total=%s",
-        module,
+        "mock OA list service=%s taskType=%s readFlag=%s page=%s status=200",
+        _norm(svc),
+        _norm(tt),
+        _norm(rf),
         page_i,
-        len(batch),
-        total,
     )
     return {"result": batch, "totalCount": total}
 
