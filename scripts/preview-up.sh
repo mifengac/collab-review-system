@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 构建并启动 Docker 预览环境（主应用 + 模拟 OA）+ 自动冒烟
-# 与正式 5009 服务隔离；不读取正式 .env；默认保留 preview 数据卷
+# 与正式 5002 服务隔离；不读取正式 .env；默认保留 preview 数据卷
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,9 +14,9 @@ VOL_DATA="collab_preview_data"
 VOL_UPLOADS="collab_preview_uploads"
 export PREVIEW_PORT="${PREVIEW_PORT:-5010}"
 MOCK_PORT_INTERNAL=5099
-APP_PORT_INTERNAL=5009
+APP_PORT_INTERNAL=5002
 FORMAL_NAME="collab-review-system"
-FORMAL_PORT=5009
+FORMAL_PORT=5002
 
 COMPOSE_FILE="docker-compose.preview.yml"
 
@@ -158,7 +158,7 @@ else
     -v "${VOL_UPLOADS}:/app/uploads" \
     -e APP_NAME="材料协同办理系统（预览）" \
     -e APP_HOST=0.0.0.0 \
-    -e APP_PORT=5009 \
+    -e APP_PORT=5002 \
     -e SECRET_KEY=preview-only-not-for-production \
     -e ACCESS_TOKEN_EXPIRE_MINUTES=480 \
     -e DEBUG=true \
@@ -182,7 +182,7 @@ else
     -e OA_SYNC_MODULES=todo,unread,done,read_done,running \
     -e OA_LIST_PATH=/hmoa/s \
     -e OA_MOCK_ENABLED=true \
-    --health-cmd "curl -fsS http://127.0.0.1:5009/api/health || exit 1" \
+    --health-cmd "curl -fsS http://127.0.0.1:5002/api/health || exit 1" \
     --health-interval 10s \
     --health-timeout 5s \
     --health-retries 8 \

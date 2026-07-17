@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 仅停止/删除预览容器与预览网络；默认保留 preview 数据卷
 # 使用 --purge 才删除 preview 数据卷
-# 绝不动正式 5009 容器 collab-review-system 或正式数据卷
+# 绝不动正式 5002 容器 collab-review-system 或正式数据卷
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

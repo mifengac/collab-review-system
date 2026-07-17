@@ -1,6 +1,6 @@
 # 材料协同办理系统 — 内网离线可运行
 # 使用前：
-#   1. docker load -i collab-review-system-1.0.0.tar
+#   1. docker load -i collab-review-system-1.0.2.tar
 #   2. cp .env.example .env   # 按内网实际修改
 #   3. docker compose up -d
 #
@@ -8,17 +8,17 @@
 
 services:
   collab-review:
-    image: collab-review-system:1.0.0
+    image: collab-review-system:1.0.2
     container_name: collab-review-system
     ports:
-      - "${APP_PORT:-5009}:5009"
+      - "${APP_PORT:-5002}:5002"
     env_file:
       - .env
     environment:
       # 以下全部支持 .env 覆盖；值为容器内路径默认，适合离线命名卷
       APP_NAME: ${APP_NAME:-材料协同办理系统}
       APP_HOST: ${APP_HOST:-0.0.0.0}
-      APP_PORT: ${APP_PORT:-5009}
+      APP_PORT: ${APP_PORT:-5002}
       SECRET_KEY: ${SECRET_KEY:-please-change-this-to-a-random-secret-key}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
       DEBUG: ${DEBUG:-false}
@@ -63,7 +63,7 @@ services:
       - collab_uploads:/app/uploads
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5009/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5002/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

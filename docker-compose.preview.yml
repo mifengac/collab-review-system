@@ -1,5 +1,5 @@
 # 材料协同办理系统 — 开发预览环境（模拟 OA）
-# 与正式 docker-compose.yml / 5009 服务完全隔离
+# 与正式 docker-compose.yml / 5002 服务完全隔离
 # 不读取正式 .env；使用独立数据卷与内部网络
 #
 # 推荐：bash scripts/preview-up.sh
@@ -28,12 +28,12 @@ services:
     image: collab-review-system:preview
     container_name: collab-review-preview
     ports:
-      # 由 preview-up.sh export PREVIEW_PORT；默认 5010，勿与正式 5009 冲突
-      - "${PREVIEW_PORT:-5010}:5009"
+      # 由 preview-up.sh export PREVIEW_PORT；默认 5010，勿与正式 5002 冲突
+      - "${PREVIEW_PORT:-5010}:5002"
     environment:
       APP_NAME: "材料协同办理系统（预览）"
       APP_HOST: "0.0.0.0"
-      APP_PORT: "5009"
+      APP_PORT: "5002"
       SECRET_KEY: "preview-only-not-for-production"
       ACCESS_TOKEN_EXPIRE_MINUTES: "480"
       DEBUG: "true"
@@ -66,7 +66,7 @@ services:
       - collab-preview-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5009/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5002/api/health"]
       interval: 10s
       timeout: 5s
       retries: 8

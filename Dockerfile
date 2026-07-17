@@ -52,9 +52,9 @@ COPY frontend ./frontend
 # 命名卷挂载后属主多为 root，保持 root 运行以保证写库/上传（内网单机部署）
 RUN mkdir -p /app/data /app/uploads
 
-EXPOSE 5009
+EXPOSE 5002
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:5009/api/health || exit 1
+  CMD curl -fsS http://127.0.0.1:5002/api/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5009"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5002"]

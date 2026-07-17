@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 IMAGE_NAME="${IMAGE_NAME:-collab-review-system}"
-IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
+IMAGE_TAG="${IMAGE_TAG:-1.0.2}"
 FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 # 默认导出到仓库内 dist/；可用第一个参数覆盖，例如：./scripts/build-and-export.sh /path/to/out
 OUT_DIR="${1:-$ROOT/dist}"
@@ -60,16 +60,16 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
 ========================================
 
 一、准备文件（本目录应有）
-  - collab-review-system-1.0.0.tar      （或 .tar.gz）
+  - collab-review-system-1.0.2.tar      （或 .tar.gz）
   - docker-compose.yml
   - .env.example  /  .env.template
 
 二、加载镜像
   # 未压缩
-  docker load -i collab-review-system-1.0.0.tar
+  docker load -i collab-review-system-1.0.2.tar
 
   # 若使用 gzip
-  gunzip -c collab-review-system-1.0.0.tar.gz | docker load
+  gunzip -c collab-review-system-1.0.2.tar.gz | docker load
 
   # 确认
   docker images | grep collab-review-system
@@ -78,6 +78,10 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
   cp .env.example .env
   # 用记事本/vim 编辑 .env：
   #   - 修改 SECRET_KEY、ADMIN_PASSWORD
+  #   - APP_PORT 默认 5002
+  #   - 数据库：默认 SQLite；若用 PostgreSQL / 人大金仓 Kingbase：
+  #       DATABASE_URL=postgresql://user:password@内网IP:端口/库名
+  #     镜像 1.0.1+ 含 psycopg2；1.0.2+ 兼容 Kingbase version() 字符串
   #   - 内网 OA 时设置 AUTH_MODE=mixed 或 oa，并填写 OA_BASE_URL
   #   - SEED_DEMO_USERS 生产请保持 false
 
@@ -87,7 +91,7 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
   docker compose logs -f
 
 五、访问
-  http://服务器IP:5009/login.html
+  http://服务器IP:5002/login.html
   默认管理员见 .env 中 ADMIN_USERNAME / ADMIN_PASSWORD
 
 六、停止 / 卸载
@@ -105,7 +109,8 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
 八、注意
   - 内网无互联网，不要执行 docker compose build
   - 不要提交含真实密码的 .env 到公开仓库
-  - 镜像标签必须为 collab-review-system:1.0.0（与 compose 中 image 一致）
+  - 镜像标签必须为 collab-review-system:1.0.2（与 compose 中 image 一致）
+  - 若报 No module named psycopg2 或 Kingbase version AssertionError：请确认已 load 1.0.2
 EOF
 
 echo "==> 完成"

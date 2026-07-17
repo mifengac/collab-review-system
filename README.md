@@ -24,7 +24,7 @@
 - 后端：Python 3.11 + FastAPI + SQLAlchemy 2.x
 - 数据库：默认 **SQLite**（本地零依赖）；`DATABASE_URL` 可切 PostgreSQL / Kingbase（兼容协议）
 - 前端：纯静态 HTML + CSS + 原生 JS（无 React/Vue/Node 构建，无外网 CDN）
-- 部署：Docker + docker-compose，默认端口 **5009**
+- 部署：Docker + docker-compose，默认端口 **5002**
 
 ## 目录结构
 
@@ -81,6 +81,7 @@ AUTH_MODE=local
 OA_BASE_URL=http://your-oa-host.example
 OA_LOGIN_PATH=/hportal/j_security_check
 OA_PROFILE_PATH=/hportal/view/GetModuleTree.do
+OA_WARMUP_PATH=/hportal/
 OA_LOGIN_TIMEOUT_SECONDS=8
 OA_DEFAULT_ROLE=viewer
 OA_VERIFY_TLS=false
@@ -91,8 +92,9 @@ OA_PRECHECK_ENABLED=false
 
 1. 用户提交账号密码到 `POST /api/auth/login`。  
 2. 服务端用内存中的 HTTP Session 调用 OA：  
+   - 先 `GET {OA_BASE_URL}{OA_WARMUP_PATH}` 热身，收下会话 cookie（真实 OA 表单登录需要）  
    - `POST {OA_BASE_URL}{OA_LOGIN_PATH}`，表单字段 `j_username` / `j_password` / `remember`  
-   - 可选预检（`OA_PRECHECK_ENABLED`）：`checkUserPKI.jsp`、`getUserNum.jsp`  
+   - 可选预检（`OA_PRECHECK_ENABLED`）：`checkUserPKI.jsp`、`getUserNum.jsp`（**不能**替代热身）  
    - `POST {OA_PROFILE_PATH}` 解析 `userInfo`（userCode / userName / departmentName 等）  
 3. **不保存** OA 密码、cookie、token；会话 cookie 仅存在于该次请求过程。  
 4. 按 `userCode` 查找本地用户：  
@@ -147,7 +149,7 @@ OA_MOCK_ENABLED=false           # 正式环境务必 false；仅开发预览可 
 - **限制（第一版）**：只同步列表元数据；不下载附件、不读正文、不回写 OA；某模块为空时按新 HAR 调整 `OA_WORK_MODULES` 配置。  
 - 交接文档唯一入口：`DEVELOPMENT_HANDOFF.md`。
 
-### 开发预览：模拟 OA（与正式 5009 隔离）
+### 开发预览：模拟 OA（与正式 5002 隔离）
 
 无真实 OA 时，可用 Docker 预览栈验证公文池与分页截断：
 
@@ -156,7 +158,7 @@ OA_MOCK_ENABLED=false           # 正式环境务必 false；仅开发预览可 
 | Compose | `docker-compose.yml` | `docker-compose.preview.yml` |
 | 主容器 | `collab-review-system` | `collab-review-preview` |
 | 模拟 OA | 无 | `collab-review-mock-oa`（仅 Docker 内网，不暴露办公网端口） |
-| 宿主机端口 | **5009** | **5010** |
+| 宿主机端口 | **5002** | **5010** |
 | 数据卷 | `collab_data` / `collab_uploads` | `collab_preview_data` / `collab_preview_uploads` |
 | 配置 | 读取 `.env` | **不读**正式 `.env`，脚本内置预览变量 |
 | `AUTH_MODE` | 按 `.env` | `oa` + `OA_SYNC_ON_LOGIN=true` |
@@ -175,7 +177,7 @@ PREVIEW_PORT=5020 bash scripts/preview-up.sh
 # 浏览器
 # http://127.0.0.1:5010/login.html
 
-# 停止预览（默认保留预览数据卷；绝不影响 5009 正式容器）
+# 停止预览（默认保留预览数据卷；绝不影响 5002 正式容器）
 bash scripts/preview-down.sh
 # 同时删除预览数据卷：
 bash scripts/preview-down.sh --purge
@@ -258,15 +260,15 @@ pip install -r requirements.txt
 cp .env.example .env
 # 按需修改 SECRET_KEY、管理员密码等
 
-# 3. 启动（端口 5009）
-uvicorn app.main:app --host 0.0.0.0 --port 5009 --reload
+# 3. 启动（端口 5002）
+uvicorn app.main:app --host 0.0.0.0 --port 5002 --reload
 ```
 
-浏览器访问：http://127.0.0.1:5009/login.html
+浏览器访问：http://127.0.0.1:5002/login.html
 
 - 数据库文件：`./data/collab.db`（自动创建）
 - 上传目录：`./uploads/`（或 `.env` 中 `UPLOAD_DIR`）
-- API 文档：http://127.0.0.1:5009/docs
+- API 文档：http://127.0.0.1:5002/docs
 
 ### 本地测试
 
@@ -286,7 +288,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-访问：http://服务器IP:5009/login.html
+访问：http://服务器IP:5002/login.html
 
 说明：
 
@@ -317,7 +319,7 @@ docker compose logs -f
 ./scripts/build-and-export.sh /path/to/export-dir
 ```
 
-脚本会构建 `collab-review-system:1.0.0`，导出 `.tar` / `.tar.gz`，并复制 `docker-compose.yml`、`.env.example` 与内网部署说明。
+脚本会构建 `collab-review-system:1.0.2`，导出 `.tar` / `.tar.gz`，并复制 `docker-compose.yml`、`.env.example` 与内网部署说明。
 
 停止：
 
@@ -337,7 +339,11 @@ DATABASE_URL=postgresql://user:password@host:5432/collab_review
 DATABASE_URL=postgresql://user:password@host:54321/collab_review
 ```
 
-应用使用标准 SQLAlchemy URL，模型未绑定 SQLite 专有语法（外键、枚举等在 PG 上可用）。生产建议再引入 Alembic 管理迁移。
+镜像 **1.0.1** 起已内置 `psycopg2-binary`；**1.0.2** 起兼容人大金仓 `KingbaseES` 的 `version()` 字符串（否则 SQLAlchemy 会报 `Could not determine version from string`）。
+
+若仍报驱动或版本解析错误，请确认镜像标签为 `collab-review-system:1.0.2`。
+
+应用使用标准 SQLAlchemy URL（金仓可用 `postgresql://...` 协议）。模型未绑定 SQLite 专有语法（外键、枚举等在 PG/金仓上可用）。生产建议再引入 Alembic 管理迁移。
 
 ## 审核流转说明
 
