@@ -2,16 +2,71 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Generator
 from typing import Any
 
 from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# KingbaseES / 部分国产 PG 兼容库的 version() 不是 "PostgreSQL x.y" 格式，
+# SQLAlchemy 默认解析会 AssertionError。在 create_engine 前打补丁。
+_ORIGINAL_PG_GET_SERVER_VERSION_INFO = PGDialect._get_server_version_info
+
+
+def _parse_kingbase_as_pg_version(version_string: str) -> tuple[int, ...] | None:
+    """
+    将 KingbaseES version() 映射为 SQLAlchemy 可用的 PostgreSQL 版本元组。
+    例：KingbaseES V008R006C009B0014 ... → (12, 0)
+    V8 系通常按 PG12 兼容能力处理（方言特性开关用）。
+    """
+    if not version_string:
+        return None
+    if "KingbaseES" not in version_string and "Kingbase" not in version_string:
+        return None
+    # V008R006C009B0014
+    m = re.search(r"V0*(\d+)R0*(\d+)", version_string, re.IGNORECASE)
+    if m:
+        major = int(m.group(1))
+        # 经验映射：V8+ → PG12；更低版本保守给 PG9.6（仅影响方言特性开关）
+        if major >= 8:
+            return (12, 0)
+        return (9, 6)
+    # 识别到金仓但格式变化时，仍给可用默认值，避免启动失败
+    logger.warning(
+        "Kingbase 版本串无法细分解析，按 PostgreSQL 12 兼容处理: %s",
+        version_string[:120],
+    )
+    return (12, 0)
+
+
+def _get_server_version_info_kingbase_safe(self, connection):  # noqa: ANN001
+    try:
+        return _ORIGINAL_PG_GET_SERVER_VERSION_INFO(self, connection)
+    except AssertionError:
+        v = connection.exec_driver_sql("select pg_catalog.version()").scalar()
+        mapped = _parse_kingbase_as_pg_version(str(v or ""))
+        if mapped is not None:
+            logger.info(
+                "已兼容 KingbaseES version 字符串，按 PostgreSQL %s 处理方言特性",
+                ".".join(str(x) for x in mapped),
+            )
+            return mapped
+        raise
+
+
+# 幂等打补丁（测试/重复 import 安全）
+if getattr(PGDialect._get_server_version_info, "__name__", "") != (
+    "_get_server_version_info_kingbase_safe"
+):
+    PGDialect._get_server_version_info = _get_server_version_info_kingbase_safe
+
 
 settings = get_settings()
 
