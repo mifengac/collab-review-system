@@ -87,7 +87,12 @@ MODULE_NAMES: dict[str, str] = {
 }
 
 PAGE_SIZE = 10
+# 预会话：模拟真实 OA 打开登录页下发的 TONG_JSESSIONID（名称用 MOCK 前缀，避免与真实 OA 混淆）
+_PRE_SESSION_COOKIE = "MOCK_OA_PRESESS"
+# 正式会话：登录成功后换发
 _SESSION_COOKIE = "MOCK_OA_SESS"
+# pre_session_id 集合（仅表示“已热身”，不含用户）
+_presessions: set[str] = set()
 # session_id -> username
 _sessions: dict[str, str] = {}
 
@@ -215,6 +220,13 @@ def _session_user(request: Request) -> str | None:
     return _sessions.get(sid)
 
 
+def _has_valid_presession(request: Request) -> bool:
+    pre = request.cookies.get(_PRE_SESSION_COOKIE)
+    if not pre:
+        return False
+    return pre in _presessions
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -224,26 +236,58 @@ def health():
     }
 
 
+@app.get("/hportal/")
+async def warmup_login_page(response: Response):
+    """模拟打开登录页：下发预会话 cookie，供后续 j_security_check 携带。"""
+    pre_sid = secrets.token_urlsafe(24)
+    _presessions.add(pre_sid)
+    response = Response(
+        content="<html><body>mock oa login page</body></html>",
+        media_type="text/html",
+        status_code=200,
+    )
+    response.set_cookie(
+        key=_PRE_SESSION_COOKIE,
+        value=pre_sid,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    logger.info("mock OA warmup issued presession")
+    return response
+
+
 @app.post("/hportal/j_security_check")
 async def j_security_check(
-    response: Response,
+    request: Request,
     j_username: str = Form(default=""),
     j_password: str = Form(default=""),
     remember: str = Form(default=""),
 ):
     username = (j_username or "").strip()
     password = j_password or ""
-    # 不记录密码
+    # 不记录密码、不记录 cookie 值
     logger.info("mock OA login attempt user=%s", username)
+
+    # 真实 OA：无预会话直接提交表单会被拒绝
+    if not _has_valid_presession(request):
+        logger.info("mock OA login rejected: missing or invalid presession")
+        return Response(content="unauthorized", media_type="text/plain", status_code=401)
 
     account = MOCK_ACCOUNTS.get(username)
     if not account or account["password"] != password:
         logger.info("mock OA login failed user=%s", username)
         return Response(content="login failed", media_type="text/plain", status_code=200)
 
+    # 消耗预会话并换发正式会话（模拟登录后会话轮换）
+    pre = request.cookies.get(_PRE_SESSION_COOKIE)
+    if pre:
+        _presessions.discard(pre)
+
     sid = secrets.token_urlsafe(24)
     _sessions[sid] = username
     response = Response(content="ok", media_type="text/plain", status_code=200)
+    response.delete_cookie(key=_PRE_SESSION_COOKIE, path="/")
     response.set_cookie(
         key=_SESSION_COOKIE,
         value=sid,
@@ -353,3 +397,4 @@ def get_module_counts() -> dict[str, int]:
 def clear_sessions() -> None:
     """测试辅助。"""
     _sessions.clear()
+    _presessions.clear()

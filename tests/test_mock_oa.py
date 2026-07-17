@@ -55,7 +55,14 @@ def mock_client():
     clear_sessions()
 
 
+def _warmup_mock(client: TestClient):
+    r = client.get("/hportal/")
+    assert r.status_code == 200
+    return r
+
+
 def _login_mock(client: TestClient, username="handler1", password="Demo@123456"):
+    _warmup_mock(client)
     r = client.post(
         "/hportal/j_security_check",
         data={"j_username": username, "j_password": password, "remember": "on"},
@@ -76,13 +83,25 @@ def test_mock_login_success_and_profile_parseable(mock_client: TestClient):
     assert "模拟" in profile.display_name or profile.display_name
 
 
+def test_mock_login_without_warmup_rejected(mock_client: TestClient):
+    """无热身预会话直接登录应 401，对齐真实 OA 行为。"""
+    r = mock_client.post(
+        "/hportal/j_security_check",
+        data={"j_username": "handler1", "j_password": "Demo@123456", "remember": "on"},
+    )
+    assert r.status_code == 401
+    r2 = mock_client.post("/hportal/view/GetModuleTree.do")
+    assert r2.status_code == 401
+
+
 def test_mock_login_wrong_password(mock_client: TestClient):
+    _warmup_mock(mock_client)
     r = mock_client.post(
         "/hportal/j_security_check",
         data={"j_username": "handler1", "j_password": "wrong-pass", "remember": "on"},
     )
     assert r.status_code == 200
-    # 无有效会话
+    # 无有效正式会话
     r2 = mock_client.post("/hportal/view/GetModuleTree.do")
     assert r2.status_code == 401
 

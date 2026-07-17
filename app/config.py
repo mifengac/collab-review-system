@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     app_name: str = "材料协同办理系统"
     app_host: str = "0.0.0.0"
-    app_port: int = 5009
+    app_port: int = 5002
     secret_key: str = "dev-secret-change-me-in-production"
     access_token_expire_minutes: int = 480
     algorithm: str = "HS256"
@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     oa_login_timeout_seconds: int = 8
     oa_default_role: str = "viewer"
     oa_verify_tls: bool = False
-    # 部分环境需先调 checkUserPKI / getUserNum，默认关闭
+    # 登录前先 GET 登录页热身，拿到会话 cookie（真实 OA 需要 TONG_JSESSIONID / route 等）
+    oa_warmup_path: str = "/hportal/"
+    # 部分环境需先调 checkUserPKI / getUserNum，默认关闭；预检响应不下发 cookie，不能替代热身
     oa_precheck_enabled: bool = False
     oa_pki_path: str = "/hportal/Login/checkUserPKI.jsp"
     oa_user_num_path: str = "/hitem/api/getUserNum.jsp"

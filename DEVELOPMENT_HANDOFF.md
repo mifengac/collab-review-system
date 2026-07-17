@@ -25,7 +25,7 @@
 
 - 内网 Ubuntu 22 虚拟机
 - Docker 部署
-- 端口规划当前使用 5009
+- 端口规划当前使用 5002
 - 内网无互联网，镜像需要外网打包后导入
 
 仓库：
@@ -58,14 +58,15 @@
 - OA 公文池同步
 - 从 OA 公文池创建协同事项
 
-当前基线：以 `main` 最新为准（本轮：五类模块 taskType/readFlag 对齐页面入口 + 模拟 OA 严格参数 + preview-smoke + PREVIEW_PORT）。
+当前基线：以 `main` 最新为准（本轮：镜像 **1.0.2** 兼容 KingbaseES version 串；1.0.1 起含 psycopg2；正式端口 **5002**）。
 
 近期相关提交：
 
-- （本轮）Fix OA sync reconciliation and sensitive data handling
-- `9f60610 Add OA sync diagnostics and module-level tracking`
-- `ffc3ddf Update handoff after OA sync hardening`
-- `73295de Add OA work item synchronization`
+- （本轮）兼容人大金仓 KingbaseES 版本字符串 + 镜像 1.0.2
+- 镜像补 PostgreSQL 驱动 + 正式端口改为 5002
+- Harden OA mock parameter validation and preview smoke tests
+- Fix OA sync reconciliation and sensitive data handling
+- Add OA sync diagnostics and module-level tracking
 
 交接文档约定：
 
@@ -111,14 +112,16 @@ OA 登录流程：
 1. 前端提交账号密码到本系统 `/api/auth/login`。
 2. 后端按 `AUTH_MODE` 分流。
 3. OA 模式下，后端用 `httpx.Client` 临时请求 OA。
-4. 登录接口默认路径：`/hportal/j_security_check`。
-5. 表单字段：`j_username`、`j_password`、`remember`。
-6. 登录后请求用户信息接口：`/hportal/view/GetModuleTree.do`。
-7. 从 `userInfo` 中解析 `userCode`、`userName`、`departmentName` 等字段。
-8. 用 OA `userCode` 查找或创建本地用户。
-9. 已有用户只更新姓名、单位等信息，不覆盖本地角色。
-10. 新 OA 用户默认角色由 `OA_DEFAULT_ROLE` 控制，建议先设为 `viewer`。
-11. 本系统签发自己的 JWT。
+4. **先热身**：GET `OA_WARMUP_PATH`（默认 `/hportal/`），让 cookie 罐收下会话 cookie。真实 OA 的表单登录依赖这一步；预检接口不下发 cookie，不能替代热身（依据 2026-07-12 HAR 分析）。
+5. 可选预检（`OA_PRECHECK_ENABLED`，默认关）：`checkUserPKI` / `getUserNum`。
+6. 登录接口默认路径：`/hportal/j_security_check`。
+7. 表单字段：`j_username`、`j_password`、`remember`。
+8. 登录后请求用户信息接口：`/hportal/view/GetModuleTree.do`。
+9. 从 `userInfo` 中解析 `userCode`、`userName`、`departmentName` 等字段。
+10. 用 OA `userCode` 查找或创建本地用户。
+11. 已有用户只更新姓名、单位等信息，不覆盖本地角色。
+12. 新 OA 用户默认角色由 `OA_DEFAULT_ROLE` 控制，建议先设为 `viewer`。
+13. 本系统签发自己的 JWT。
 
 安全原则：
 
@@ -293,6 +296,16 @@ HAR 中观察到的列表入口：
 
 ## 7. OA 同步：诊断、过期清理与安全
 
+### 7.0 真实 OA 需要先 GET 登录页建会话
+
+依据 **2026-07-12** 的 HAR 抓包对比（内容未入库，仅作行为结论）：
+
+- 浏览器提交 `j_security_check` 时，请求里**已经带着**打开登录页时下发的会话 cookie（如 `TONG_JSESSIONID`、`route`）。
+- 冷启动直接 POST 登录、cookie 罐为空时，真实 OA 会拒绝（常见 401）。
+- 预检接口（`checkUserPKI.jsp`、`getUserNum.jsp`）的响应**不下发**上述会话 cookie，打开 `OA_PRECHECK_ENABLED` **解决不了**缺会话问题。
+- 密码为明文表单字段 `j_password`，路径与 `userInfo` 结构与现有代码一致，无需因加密改登录体。
+- 本系统对策：登录前 GET `OA_WARMUP_PATH`（默认 `/hportal/`）热身；模拟 OA（`app/mock_oa.py`）同样要求先热身拿预会话，无预会话登录返回 401，登录成功后换发正式会话 cookie。
+
 ### 7.1 能力摘要
 
 - 表 `oa_sync_logs`：login/manual 同步诊断。
@@ -326,7 +339,7 @@ HAR 中观察到的列表入口：
 | 启动/停止 | `bash scripts/preview-up.sh` / `bash scripts/preview-down.sh`（`--purge` 才删预览卷） |
 | 主容器 | `collab-review-preview`，宿主机 **5010** |
 | 模拟 OA 容器 | `collab-review-mock-oa`，**仅内部网络**，不映射办公网端口 |
-| 正式服务 | 仍为 `collab-review-system` **5009**，预览脚本不得停止正式容器 |
+| 正式服务 | 仍为 `collab-review-system` **5002**，预览脚本不得停止正式容器 |
 | 镜像 | `collab-review-system:preview`（preview-up 每次重新 build） |
 | 配置 | `DEBUG=true` `SEED_DEMO_USERS=true` `AUTH_MODE=oa` `OA_SYNC_ON_LOGIN=true` `OA_MOCK_ENABLED=true` `OA_BASE_URL=http://mock-oa:5099` |
 | 条数 | todo23 / unread12 / done18 / read_done7 / running35 |
@@ -351,7 +364,7 @@ HAR 中观察到的列表入口：
 - **真实 `/hmoa/s` 参数仍标记：待内网验证。**  
 - 模拟 OA `resolve_module_strict` 与上表一致；缺参/错参 → HTTP 400，不猜模块。  
 - `scripts/preview-smoke.py`：登录后校验五类数量、running 截断、create-collab 幂等；不打印 Token/密码。  
-- `PREVIEW_PORT`：compose 使用 `${PREVIEW_PORT:-5010}:5009`；`preview-up.sh` 会 export。
+- `PREVIEW_PORT`：compose 使用 `${PREVIEW_PORT:-5010}:5002`；`preview-up.sh` 会 export。
 
 ### 7.5 真实 OA 联调检查表（待内网验证）
 

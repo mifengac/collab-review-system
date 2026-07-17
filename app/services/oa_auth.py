@@ -100,6 +100,18 @@ def _parse_profile(data: dict[str, Any], fallback_username: str) -> OAUserProfil
     )
 
 
+def _warmup_session(client: httpx.Client, base: str) -> None:
+    """先打开登录页，让 cookie 罐收下服务器下发的会话（模拟浏览器热身）。
+
+    响应内容忽略；超时/网络错误由外层统一转成 OAAuthUnavailable。
+    绝不记录 cookie 值。
+    """
+    settings = get_settings()
+    warmup_url = _join_url(base, settings.oa_warmup_path)
+    resp = client.get(warmup_url)
+    logger.info("OA warmup request finished status=%s", resp.status_code)
+
+
 def _optional_precheck(client: httpx.Client, base: str, username: str) -> None:
     settings = get_settings()
     if not settings.oa_precheck_enabled:
@@ -136,6 +148,8 @@ def _login_and_profile(client: httpx.Client, username: str, password: str) -> OA
     login_url = _join_url(base, settings.oa_login_path)
     profile_url = _join_url(base, settings.oa_profile_path)
 
+    # 真实 OA 的 j_security_check 需要先有会话 cookie（浏览器打开登录页时拿到）
+    _warmup_session(client, base)
     _optional_precheck(client, base, username)
 
     login_resp = client.post(
