@@ -202,6 +202,25 @@ class ItemAssign(BaseModel):
     comment: str | None = None
 
 
+class BatchAssignRequest(BaseModel):
+    item_ids: list[int] = Field(min_length=1, max_length=200)
+    handler_id: int | None = None
+    leader_a_id: int | None = None
+    leader_b_id: int | None = None
+    comment: str | None = None
+
+
+class BatchAssignFailure(BaseModel):
+    item_id: int
+    detail: str
+
+
+class BatchAssignResult(BaseModel):
+    success: int
+    failed: list[BatchAssignFailure] = []
+    message: str
+
+
 class SuperviseAction(BaseModel):
     comment: str = Field(min_length=1)
 
@@ -248,7 +267,7 @@ class DocumentOut(ORMModel):
 # ---------- Action log ----------
 class ActionLogOut(ORMModel):
     id: int
-    item_id: int
+    item_id: int | None = None
     actor_id: int
     action: ActionType
     comment: str | None

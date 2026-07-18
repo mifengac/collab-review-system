@@ -11,6 +11,8 @@
   <script>
     if (!requireAuth()) throw new Error("redirect");
     const root = renderShell("items", "事项列表");
+    const me = getUser() || {};
+    const canBatch = me.role === "admin" || me.role === "office_clerk";
 
     const STATUSES = [
       "",
@@ -24,23 +26,53 @@
       "已归档",
       "已作废",
     ];
+    const STAGES = [
+      ["", "全部环节"],
+      ["pending_handler", "待承办/退回中"],
+      ["pending_a", "待 A 审"],
+      ["pending_b", "待 B 审"],
+    ];
+
+    let usersCache = [];
+    let deptsCache = [];
 
     root.innerHTML = `
-      <div class="toolbar">
-        <input type="text" id="kw" placeholder="标题 / 文号 / 来文单位" style="width:220px" />
+      <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+        <input type="text" id="kw" placeholder="标题 / 文号 / 来文单位" style="width:180px" />
         <select id="st">
           ${STATUSES.map((s) => `<option value="${s}">${s || "全部状态"}</option>`).join("")}
         </select>
+        <select id="stage">
+          ${STAGES.map(([v, lab]) => `<option value="${v}">${lab}</option>`).join("")}
+        </select>
+        <select id="dept" style="min-width:140px">
+          <option value="">全部大队</option>
+        </select>
+        <input type="date" id="dlFrom" title="期限起" />
+        <span class="hint">至</span>
+        <input type="date" id="dlTo" title="期限止" />
         <button class="btn" type="button" id="btnSearch">查询</button>
         <div class="spacer"></div>
         <a class="btn btn-primary" href="/item_form.html">＋ 新建事项</a>
       </div>
+      ${
+        canBatch
+          ? `<div class="toolbar" id="batchBar" style="margin-top:0;display:none">
+        <span class="hint">已选 <b id="selCnt">0</b> 条</span>
+        <select id="batchHandler" style="min-width:120px"><option value="">承办人…</option></select>
+        <select id="batchLa" style="min-width:120px"><option value="">A 领导…</option></select>
+        <select id="batchLb" style="min-width:120px"><option value="">B 领导…</option></select>
+        <button class="btn btn-sm btn-primary" type="button" id="btnBatchAssign">批量分派</button>
+      </div>`
+          : ""
+      }
       <div class="panel">
         <div class="panel-hd"><span>协同事项</span><span class="hint" id="cnt"></span></div>
         <div class="panel-bd table-wrap">
           <table class="data">
             <thead>
               <tr>
+                ${canBatch ? `<th style="width:36px"><input type="checkbox" id="chkAll" title="全选" /></th>` : ""}
                 <th style="width:48px">ID</th>
                 <th>标题</th>
                 <th>OA文号</th>
@@ -53,29 +85,97 @@
                 <th>更新时间</th>
               </tr>
             </thead>
-            <tbody id="tbody"><tr><td colspan="10" class="empty-row">加载中…</td></tr></tbody>
+            <tbody id="tbody"><tr><td colspan="${canBatch ? 11 : 10}" class="empty-row">加载中…</td></tr></tbody>
           </table>
         </div>
       </div>
     `;
 
+    const colSpan = canBatch ? 11 : 10;
+
+    function selectedIds() {
+      return Array.from(root.querySelectorAll(".row-chk:checked")).map((el) => Number(el.dataset.id));
+    }
+
+    function updateSelCnt() {
+      const n = selectedIds().length;
+      const el = document.getElementById("selCnt");
+      if (el) el.textContent = String(n);
+      const bar = document.getElementById("batchBar");
+      if (bar) bar.style.display = n > 0 ? "flex" : "none";
+    }
+
+    async function ensureLookups() {
+      if (!deptsCache.length) {
+        try {
+          deptsCache = await api("/api/dict/departments");
+          const sel = document.getElementById("dept");
+          deptsCache.forEach((d) => {
+            if (!d.is_active && d.is_active !== undefined) return;
+            const o = document.createElement("option");
+            o.value = d.name;
+            o.textContent = d.name;
+            sel.appendChild(o);
+          });
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      if (canBatch && !usersCache.length) {
+        try {
+          usersCache = await api("/api/auth/user-options");
+          const fill = (selId, role) => {
+            const sel = document.getElementById(selId);
+            usersCache
+              .filter((u) => u.role === role)
+              .forEach((u) => {
+                const o = document.createElement("option");
+                o.value = u.id;
+                o.textContent = (u.display_name || u.username) + (u.unit ? " · " + u.unit : "");
+                sel.appendChild(o);
+              });
+          };
+          fill("batchHandler", "handler");
+          fill("batchLa", "leader_a");
+          fill("batchLb", "leader_b");
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    }
+
     async function load() {
+      await ensureLookups();
       const kw = document.getElementById("kw").value.trim();
       const st = document.getElementById("st").value;
+      const stage = document.getElementById("stage").value;
+      const dept = document.getElementById("dept").value;
+      const dlFrom = document.getElementById("dlFrom").value;
+      const dlTo = document.getElementById("dlTo").value;
       let url = "/api/items?limit=200";
       if (kw) url += "&keyword=" + encodeURIComponent(kw);
       if (st) url += "&status=" + encodeURIComponent(st);
+      if (stage) url += "&stage=" + encodeURIComponent(stage);
+      if (dept) url += "&handler_dept=" + encodeURIComponent(dept);
+      if (dlFrom) url += "&deadline_from=" + encodeURIComponent(dlFrom + "T00:00:00");
+      if (dlTo) url += "&deadline_to=" + encodeURIComponent(dlTo + "T23:59:59");
       try {
         const list = await api(url);
         document.getElementById("cnt").textContent = "共 " + list.length + " 条";
         const tb = document.getElementById("tbody");
         if (!list.length) {
-          tb.innerHTML = `<tr><td colspan="10" class="empty-row">暂无事项</td></tr>`;
+          tb.innerHTML = `<tr><td colspan="${colSpan}" class="empty-row">暂无事项</td></tr>`;
+          updateSelCnt();
           return;
         }
         tb.innerHTML = list
           .map(
             (it) => `<tr>
+            ${
+              canBatch
+                ? `<td><input type="checkbox" class="row-chk" data-id="${it.id}" /></td>`
+                : ""
+            }
             <td>${it.id}</td>
             <td><a href="/item_detail.html?id=${it.id}">${escapeHtml(it.title)}</a></td>
             <td>${escapeHtml(it.oa_doc_no || "—")}</td>
@@ -89,6 +189,20 @@
           </tr>`
           )
           .join("");
+        root.querySelectorAll(".row-chk").forEach((el) => {
+          el.onchange = updateSelCnt;
+        });
+        const chkAll = document.getElementById("chkAll");
+        if (chkAll) {
+          chkAll.checked = false;
+          chkAll.onchange = () => {
+            root.querySelectorAll(".row-chk").forEach((el) => {
+              el.checked = chkAll.checked;
+            });
+            updateSelCnt();
+          };
+        }
+        updateSelCnt();
       } catch (e) {
         toast(e.message, "error");
       }
@@ -98,6 +212,48 @@
     document.getElementById("kw").addEventListener("keydown", (e) => {
       if (e.key === "Enter") load();
     });
+
+    if (canBatch) {
+      document.getElementById("btnBatchAssign").onclick = async () => {
+        const ids = selectedIds();
+        if (!ids.length) {
+          toast("请先勾选事项", "error");
+          return;
+        }
+        const handler_id = document.getElementById("batchHandler").value;
+        const leader_a_id = document.getElementById("batchLa").value;
+        const leader_b_id = document.getElementById("batchLb").value;
+        const body = { item_ids: ids };
+        if (handler_id) body.handler_id = Number(handler_id);
+        if (leader_a_id) body.leader_a_id = Number(leader_a_id);
+        if (leader_b_id) body.leader_b_id = Number(leader_b_id);
+        if (!body.handler_id && !body.leader_a_id && !body.leader_b_id) {
+          toast("请至少选择一个分派目标", "error");
+          return;
+        }
+        if (!confirm("确认对选中的 " + ids.length + " 条事项批量分派？")) return;
+        try {
+          const r = await api("/api/items/batch-assign", {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          let msg = r.message || "完成";
+          if (r.failed && r.failed.length) {
+            msg +=
+              "；失败示例：" +
+              r.failed
+                .slice(0, 3)
+                .map((f) => "#" + f.item_id + " " + f.detail)
+                .join("；");
+          }
+          toast(msg, r.failed && r.failed.length ? "error" : "success");
+          load();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+    }
+
     load();
   </script>
 </body>

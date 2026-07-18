@@ -9,6 +9,9 @@ from app.database import get_db
 from app.models import ActionLog, ActionType, Item, ItemStatus, User, UserRole
 from app.schemas import (
     ActionLogOut,
+    BatchAssignFailure,
+    BatchAssignRequest,
+    BatchAssignResult,
     DashboardOut,
     DashboardStats,
     ItemAssign,
@@ -197,12 +200,32 @@ def dashboard(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
     )
 
 
+# 环节筛选：待承办 / 待 A 审 / 待 B 审（参数白名单，防注入）
+STAGE_STATUS_MAP: dict[str, list[ItemStatus]] = {
+    "pending_handler": [
+        ItemStatus.draft,
+        ItemStatus.handling,
+        ItemStatus.leader_a_rejected,
+        ItemStatus.leader_b_rejected,
+    ],
+    "pending_a": [ItemStatus.leader_a_review],
+    "pending_b": [ItemStatus.leader_b_review],
+}
+
+
 @router.get("", response_model=list[ItemBrief])
 def list_items(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
     status: ItemStatus | None = None,
     keyword: str | None = None,
+    handler_dept: Annotated[str | None, Query(description="承办大队精确匹配")] = None,
+    stage: Annotated[
+        str | None,
+        Query(description="环节：pending_handler|pending_a|pending_b"),
+    ] = None,
+    deadline_from: Annotated[datetime | None, Query(description="期限起（含）")] = None,
+    deadline_to: Annotated[datetime | None, Query(description="期限止（含）")] = None,
     limit: int = Query(100, le=500),
 ):
     q = db.query(Item)
@@ -211,8 +234,23 @@ def list_items(
         q = q.filter(scope)
     if status:
         q = q.filter(Item.status == status)
+    if stage:
+        key = (stage or "").strip().lower()
+        if key not in STAGE_STATUS_MAP:
+            raise HTTPException(
+                status_code=400,
+                detail="stage 仅支持 pending_handler / pending_a / pending_b",
+            )
+        q = q.filter(Item.status.in_(STAGE_STATUS_MAP[key]))
+    dept = (handler_dept or "").strip()
+    if dept:
+        q = q.filter(Item.handler_dept == dept)
+    if deadline_from is not None:
+        q = q.filter(Item.deadline.isnot(None), Item.deadline >= deadline_from)
+    if deadline_to is not None:
+        q = q.filter(Item.deadline.isnot(None), Item.deadline <= deadline_to)
     if keyword:
-        like = f"%{keyword}%"
+        like = f"%{keyword.strip()}%"
         q = q.filter(
             (Item.title.like(like))
             | (Item.oa_doc_no.like(like))
@@ -300,15 +338,18 @@ def update_item(
     return _get_item(db, item_id)
 
 
-@router.post("/{item_id}/assign", response_model=ItemDetail)
-def assign_item(
-    item_id: int,
+def _apply_assign(
+    db: Session,
+    item: Item,
+    user: User,
     body: ItemAssign,
-    user: CurrentUser,
-    db: Annotated[Session, Depends(get_db)],
-):
-    """办公室分派/调整承办人与 A/B 领导。"""
-    item = _get_item(db, item_id)
+    *,
+    commit: bool = True,
+) -> Item:
+    """
+    分派核心逻辑（单条）。权限与状态规则与原先一致，禁止绕过。
+    commit=False 时由批量接口统一提交。
+    """
     ensure_can_assign_item(user, item)
 
     st = item.status
@@ -364,7 +405,77 @@ def assign_item(
         comment=comment,
         detail="；".join(changes),
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return item
+
+
+@router.post("/batch-assign", response_model=BatchAssignResult)
+def batch_assign_items(
+    body: BatchAssignRequest,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """办公室/管理员批量分派：逐条复用单条分派规则，失败不阻断其它条目。"""
+    if user.role not in (UserRole.admin, UserRole.office_clerk):
+        raise HTTPException(status_code=403, detail="仅管理员或办公室收文员可批量分派")
+
+    assign_body = ItemAssign(
+        handler_id=body.handler_id,
+        leader_a_id=body.leader_a_id,
+        leader_b_id=body.leader_b_id,
+        comment=body.comment,
+    )
+    # 至少要指定一个参与人字段
+    raw = assign_body.model_dump(exclude_unset=True)
+    raw.pop("comment", None)
+    if not raw:
+        raise HTTPException(status_code=400, detail="请至少指定承办人或 A/B 领导之一")
+
+    # 去重保序
+    seen: set[int] = set()
+    ids: list[int] = []
+    for i in body.item_ids:
+        if i not in seen:
+            seen.add(i)
+            ids.append(i)
+
+    success = 0
+    failed: list[BatchAssignFailure] = []
+    for item_id in ids:
+        try:
+            item = _get_item(db, item_id)
+            # 逐条 commit，避免一条失败回滚已成功条目
+            _apply_assign(db, item, user, assign_body, commit=True)
+            success += 1
+        except HTTPException as exc:
+            db.rollback()
+            detail = exc.detail if isinstance(exc.detail, str) else "分派失败"
+            failed.append(BatchAssignFailure(item_id=item_id, detail=detail))
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            failed.append(
+                BatchAssignFailure(item_id=item_id, detail=f"异常:{type(exc).__name__}")
+            )
+
+    msg = f"成功 {success} 条"
+    if failed:
+        msg += f"，失败 {len(failed)} 条"
+    return BatchAssignResult(success=success, failed=failed, message=msg)
+
+
+@router.post("/{item_id}/assign", response_model=ItemDetail)
+def assign_item(
+    item_id: int,
+    body: ItemAssign,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """办公室分派/调整承办人与 A/B 领导。"""
+    item = _get_item(db, item_id)
+    _apply_assign(db, item, user, body, commit=True)
     return _get_item(db, item_id)
 
 
