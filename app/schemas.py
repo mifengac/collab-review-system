@@ -347,6 +347,9 @@ class EditorConfigOut(BaseModel):
     message: str = "在线编辑功能预留，后续接入 ONLYOFFICE Docs"
     editor_url: str | None = None
     config: dict[str, Any] = {}
+    version_no: int | None = None
+    track_changes_forced: bool = False
+    can_review: bool = False
 
 
 class OnlyOfficeCallbackOut(BaseModel):

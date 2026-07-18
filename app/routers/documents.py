@@ -12,6 +12,7 @@ from app.schemas import DocumentOut, EditorConfigOut, FileVersionOut, MessageOut
 from app.services.files import resolve_file_path, save_upload
 from app.services.onlyoffice import (
     build_editor_config,
+    can_access_onlyoffice_config,
     current_version_file_path,
     is_onlyoffice_ready,
     verify_download_token,
@@ -171,10 +172,11 @@ def editor_config(
     item = db.query(Item).filter(Item.id == doc.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="事项不存在")
-    ensure_can_view_item(user, item)
 
     settings = get_settings()
     if not is_onlyoffice_ready(settings):
+        # 未启用时仍按事项查看权限返回预留提示
+        ensure_can_view_item(user, item)
         return EditorConfigOut(
             document_id=document_id,
             mode="view",
@@ -194,7 +196,14 @@ def editor_config(
                     "callbackUrl": f"/api/onlyoffice/callback?document_id={document_id}",
                 },
             },
+            version_no=doc.current_version or None,
+            track_changes_forced=False,
+            can_review=False,
         )
+
+    # 启用时：viewer / 非参与人 403（见 can_access_onlyoffice_config）
+    if not can_access_onlyoffice_config(user, item):
+        raise HTTPException(status_code=403, detail="无权打开在线编辑器")
 
     payload = build_editor_config(db, doc, item, user, settings)
     return EditorConfigOut.model_validate(payload)

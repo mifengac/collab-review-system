@@ -8,24 +8,43 @@
   <style>
     html, body { height: 100%; margin: 0; }
     #bar {
-      height: 40px;
+      min-height: 40px;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 0 12px;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      padding: 6px 12px;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
       font-size: 13px;
     }
-    #placeholder { height: calc(100% - 40px); }
+    #banner {
+      width: 100%;
+      margin: 0;
+      padding: 6px 10px;
+      background: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid #f5d0a9;
+      border-radius: var(--radius);
+      font-size: 12px;
+    }
+    #banner.view-only {
+      background: var(--info-bg);
+      color: var(--info);
+      border-color: #b2ddff;
+    }
+    #placeholder { height: calc(100% - 72px); }
     #err { color: var(--danger); padding: 24px; }
+    .meta { color: var(--text-secondary); }
   </style>
 </head>
 <body>
   <div id="bar">
     <a href="javascript:history.back()">← 返回</a>
     <span id="title">加载编辑器…</span>
-    <span class="hint" id="mode"></span>
+    <span class="meta" id="ver"></span>
+    <span class="meta" id="mode"></span>
+    <div id="banner" style="display:none"></div>
   </div>
   <div id="placeholder"></div>
   <div id="err" style="display:none"></div>
@@ -37,6 +56,7 @@
     const documentId = params.get("document_id") || params.get("id");
     const errEl = document.getElementById("err");
     const ph = document.getElementById("placeholder");
+    const banner = document.getElementById("banner");
 
     function showErr(msg) {
       ph.style.display = "none";
@@ -71,8 +91,24 @@
         }
         document.getElementById("title").textContent =
           (cfg.config.document && cfg.config.document.title) || ("文档 #" + documentId);
+        const vno = cfg.version_no != null ? cfg.version_no : "—";
+        document.getElementById("ver").textContent = "当前版本 v" + vno;
         document.getElementById("mode").textContent =
-          "模式：" + (cfg.mode === "edit" ? "编辑" : "只读") + "（3a 基础对接，修订模式下轮再做）";
+          "模式：" +
+          (cfg.mode === "edit" ? "编辑" : cfg.mode === "review" ? "审阅（强制修订）" : "只读");
+
+        banner.style.display = "block";
+        if (cfg.track_changes_forced) {
+          banner.className = "";
+          banner.textContent =
+            "修订模式已强制开启：修改将留下作者姓名与时间痕迹。" +
+            (cfg.can_review
+              ? "您可以接受或拒绝修订。"
+              : "当前角色仅能以修订方式修改，不可关闭留痕。");
+        } else {
+          banner.className = "view-only";
+          banner.textContent = cfg.message || "只读模式：不可编辑本文档。";
+        }
 
         await loadScript(cfg.editor_url);
         if (typeof DocsAPI === "undefined" || !DocsAPI.DocEditor) {

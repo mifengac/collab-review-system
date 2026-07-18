@@ -11,15 +11,64 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
-from app.models import Document, FileVersion, Item, ItemStatus, User
+from app.models import Document, FileVersion, Item, ItemStatus, User, UserRole
 from app.services.files import MAX_SIZE, resolve_file_path, save_bytes_as_new_version
-from app.services.permissions import LOCKED_STATUSES, can_upload_document, can_view_item
+from app.services.permissions import LOCKED_STATUSES, can_view_item
 
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_PURPOSE = "oo_download"
 DOWNLOAD_TOKEN_MINUTES = 15
 OO_ALGORITHM = "HS256"
+
+
+def editor_display_name(user: User) -> str:
+    """修订痕迹作者名：姓名·单位。"""
+    name = (user.display_name or user.username or "").strip() or "用户"
+    unit = (user.unit or "").strip()
+    if unit:
+        return f"{name}·{unit}"
+    return name
+
+
+def can_access_onlyoffice_config(user: User, item: Item) -> bool:
+    """
+    能否取得 editor-config。
+    viewer 与非参与人（且非全局查看角色）一律 403；
+    办公室/督办可看事项 → 可进编辑器但只读。
+    """
+    if user.role == UserRole.viewer:
+        return False
+    return can_view_item(user, item)
+
+
+def can_write_onlyoffice(user: User, item: Item) -> bool:
+    """
+    可写：admin、本事项承办人、被指派的 A/B 领导。
+    办公室收文员、督办只读；终态只读。
+    """
+    if item.status in LOCKED_STATUSES:
+        return False
+    if user.role == UserRole.admin:
+        return True
+    if user.role == UserRole.handler and item.handler_id is not None and user.id == item.handler_id:
+        return True
+    if user.role == UserRole.leader_a and item.leader_a_id is not None and user.id == item.leader_a_id:
+        return True
+    if user.role == UserRole.leader_b and item.leader_b_id is not None and user.id == item.leader_b_id:
+        return True
+    return False
+
+
+def can_review_onlyoffice(user: User, item: Item) -> bool:
+    """接受/拒绝修订：承办人本人与 admin（领导只能改、不能关留痕/清修订）。"""
+    if not can_write_onlyoffice(user, item):
+        return False
+    if user.role == UserRole.admin:
+        return True
+    if user.role == UserRole.handler and item.handler_id is not None and user.id == item.handler_id:
+        return True
+    return False
 
 
 def is_onlyoffice_ready(settings: Settings | None = None) -> bool:
@@ -111,8 +160,8 @@ def build_editor_config(
     if not is_onlyoffice_ready(s):
         raise HTTPException(status_code=503, detail="在线编辑未启用或配置不完整")
 
-    if not can_view_item(user, item):
-        raise HTTPException(status_code=403, detail="无权查看该事项")
+    if not can_access_onlyoffice_config(user, item):
+        raise HTTPException(status_code=403, detail="无权打开在线编辑器")
 
     version = (
         db.query(FileVersion)
@@ -131,9 +180,19 @@ def build_editor_config(
     file_url = f"{app_base}/api/documents/{doc.id}/raw?token={dl_token}"
     callback_url = f"{app_base}/api/onlyoffice/callback?document_id={doc.id}"
 
-    locked = item.status in LOCKED_STATUSES
-    can_edit = (not locked) and can_upload_document(user, item)
-    mode = "edit" if can_edit else "view"
+    # 权限级强制留痕：
+    # - 承办人/admin（full_edit）：edit=true + review=true，可直接编辑并接受/拒绝修订；
+    # - 被指派领导（review_only）：edit=false + review=true——ONLYOFFICE 在此权限组合下
+    #   只允许以修订方式修改，界面上没有“关闭留痕”的入口（customization.trackChanges
+    #   只是初始开关、编辑权限用户可自行关闭，故不能依赖它来强制）；
+    # - 其余可见者只读。
+    full_edit = can_review_onlyoffice(user, item)
+    review_only = can_write_onlyoffice(user, item) and not full_edit
+    writable = full_edit or review_only
+    # DS 的 review 能力要求 editorConfig.mode=edit；只读者才用 view
+    editor_mode = "edit" if writable else "view"
+    mode = "edit" if full_edit else ("review" if review_only else "view")
+    can_review = full_edit
 
     key = build_document_key(doc, version)
     config: dict[str, Any] = {
@@ -144,33 +203,49 @@ def build_editor_config(
             "title": doc.name or version.original_filename or f"doc-{doc.id}.docx",
             "url": file_url,
             "permissions": {
-                "edit": can_edit,
+                "edit": full_edit,
+                "review": writable,
+                "comment": writable,
                 "download": True,
                 "print": True,
             },
         },
         "editorConfig": {
-            "mode": mode,
+            "mode": editor_mode,
             "lang": "zh-CN",
             "callbackUrl": callback_url,
             "user": {
                 "id": str(user.id),
-                "name": user.display_name or user.username,
+                "name": editor_display_name(user),
             },
             "customization": {
                 "forcesave": True,
+                # 初始进入即修订状态（对 full_edit 是初始值，对 review_only 由权限锁死）
+                "trackChanges": True if writable else False,
+                "reviewDisplay": "markup",
             },
         },
     }
     token = sign_onlyoffice_config(config, s)
     config["token"] = token
+
+    if full_edit:
+        msg = "编辑模式：修订默认开启，您可以直接编辑，并接受或拒绝各处修订。"
+    elif review_only:
+        msg = "强制修订模式：您的每处修改都会记录姓名和时间，无法关闭留痕。"
+    else:
+        msg = "只读打开（办公室/督办或终态事项不可编辑）"
+
     return {
         "document_id": doc.id,
         "mode": mode,
         "reserved": False,
-        "message": "ONLYOFFICE 编辑配置已生成",
+        "message": msg,
         "editor_url": editor_js_url(s),
         "config": config,
+        "version_no": version.version_no,
+        "track_changes_forced": bool(writable),
+        "can_review": bool(can_review),
     }
 
 
@@ -260,6 +335,13 @@ def handle_callback_save(
     try:
         raw = download_remote_file(str(url))
         actor = resolve_callback_actor(db, doc, body.get("users"))
+        if not can_write_onlyoffice(actor, item):
+            logger.info(
+                "ONLYOFFICE 拒绝保存：操作人无写权限 document_id=%s user_id=%s",
+                document_id,
+                actor.id,
+            )
+            return {"error": 1}
         filename = doc.name if (doc.name or "").lower().endswith(".docx") else f"{doc.name or 'edited'}.docx"
         if not filename.lower().endswith(".docx"):
             filename = f"{filename}.docx"

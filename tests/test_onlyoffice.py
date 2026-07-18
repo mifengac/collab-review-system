@@ -122,12 +122,16 @@ def test_editor_config_permission_and_shape(client: TestClient):
     users = _users(client, ah)
     _item_id, doc_id = _create_item_with_main(client, ah, users, "OO权限")
 
-    # 参与人可取
+    # 参与人可取 + 强制修订 + 可 review
     hh = _login(client, "handler1")
     r = client.get(f"/api/documents/{doc_id}/editor-config", headers=hh)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["reserved"] is False
+    assert body["mode"] == "edit"
+    assert body["track_changes_forced"] is True
+    assert body["can_review"] is True
+    assert body["version_no"] == 1
     assert body["editor_url"]
     assert body["config"]["document"]["url"]
     assert "token" in body["config"]
@@ -135,8 +139,14 @@ def test_editor_config_permission_and_shape(client: TestClient):
     assert body["config"]["editorConfig"]["callbackUrl"].endswith(
         f"/api/onlyoffice/callback?document_id={doc_id}"
     )
+    assert body["config"]["editorConfig"]["customization"]["trackChanges"] is True
+    assert body["config"]["document"]["permissions"]["edit"] is True
+    assert body["config"]["document"]["permissions"]["review"] is True
+    # 作者名含单位
+    uname = body["config"]["editorConfig"]["user"]["name"]
+    assert "·" in uname or uname  # 有单位则带点号
 
-    # 局外人 403
+    # 局外人 / viewer 403
     r = client.post(
         "/api/auth/users",
         headers=ah,
@@ -330,3 +340,135 @@ def test_callback_rejects_finalized_item(client: TestClient, monkeypatch):
 
     r = client.get(f"/api/documents/{doc_id}/versions", headers=ah)
     assert max(v["version_no"] for v in r.json()) == 1
+
+
+def test_editor_permission_matrix_and_same_key(client: TestClient):
+    """
+    可写：承办人 / A·B 领导 / admin；
+    只读：办公室、督办；
+    拒绝：viewer、非参与人；
+    终态只读；
+    同一版本两人 config 的 document.key 相同。
+    """
+    ah = _admin(client)
+    users = _users(client, ah)
+    item_id, doc_id = _create_item_with_main(client, ah, users, "OO权限矩阵")
+
+    def cfg(headers):
+        r = client.get(f"/api/documents/{doc_id}/editor-config", headers=headers)
+        return r.status_code, (r.json() if r.status_code == 200 else r.json())
+
+    # admin 可写 + review
+    st, body = cfg(ah)
+    assert st == 200
+    assert body["mode"] == "edit"
+    assert body["can_review"] is True
+    assert body["config"]["document"]["permissions"]["edit"] is True
+    key_admin = body["config"]["document"]["key"]
+
+    # 承办人可写 + review，key 与 admin 相同（同版本协同）
+    st, body = cfg(_login(client, "handler1"))
+    assert st == 200
+    assert body["mode"] == "edit"
+    assert body["can_review"] is True
+    assert body["track_changes_forced"] is True
+    assert body["config"]["document"]["key"] == key_admin
+
+    # A 领导：仅能修订——edit=false + review=true 是权限级强制留痕（界面无法关闭）
+    st, body = cfg(_login(client, "leader_a"))
+    assert st == 200
+    assert body["mode"] == "review"
+    assert body["can_review"] is False
+    assert body["track_changes_forced"] is True
+    assert body["config"]["document"]["permissions"]["edit"] is False
+    assert body["config"]["document"]["permissions"]["review"] is True
+    # review 能力要求 DS 的 editorConfig.mode 仍为 edit
+    assert body["config"]["editorConfig"]["mode"] == "edit"
+    assert body["config"]["editorConfig"]["customization"]["trackChanges"] is True
+    assert body["config"]["document"]["key"] == key_admin
+
+    # B 领导同 A
+    st, body = cfg(_login(client, "leader_b"))
+    assert st == 200
+    assert body["mode"] == "review"
+    assert body["can_review"] is False
+    assert body["config"]["document"]["permissions"]["edit"] is False
+    assert body["config"]["document"]["permissions"]["review"] is True
+    assert body["config"]["document"]["key"] == key_admin
+
+    # 办公室只读
+    st, body = cfg(_login(client, "office1"))
+    assert st == 200
+    assert body["mode"] == "view"
+    assert body["track_changes_forced"] is False
+    assert body["config"]["document"]["permissions"]["edit"] is False
+    assert body["config"]["document"]["key"] == key_admin
+
+    # 督办只读
+    st, body = cfg(_login(client, "supervisor1"))
+    assert st == 200
+    assert body["mode"] == "view"
+    assert body["config"]["document"]["permissions"]["edit"] is False
+
+    # 另一 handler 非本事项承办人 → 非参与人 403
+    r = client.post(
+        "/api/auth/users",
+        headers=ah,
+        json={
+            "username": "handler_other",
+            "password": "Out@123456",
+            "display_name": "他大队承办",
+            "role": "handler",
+            "unit": "治安管理行动大队",
+        },
+    )
+    assert r.status_code == 200
+    st, _ = cfg(_login(client, "handler_other", "Out@123456"))
+    assert st == 403
+
+    # viewer 即使理论上能看见列表也不给 config
+    r = client.post(
+        "/api/auth/users",
+        headers=ah,
+        json={
+            "username": "viewer_only",
+            "password": "Out@123456",
+            "display_name": "只读员",
+            "role": "viewer",
+        },
+    )
+    assert r.status_code == 200
+    st, _ = cfg(_login(client, "viewer_only", "Out@123456"))
+    assert st == 403
+
+    # 终态：可进编辑器但只读
+    hh = _login(client, "handler1")
+    assert client.post(f"/api/items/{item_id}/submit-a", headers=hh, json={}).status_code == 200
+    la = _login(client, "leader_a")
+    assert client.post(f"/api/items/{item_id}/approve-a", headers=la, json={}).status_code == 200
+    lb = _login(client, "leader_b")
+    assert (
+        client.post(f"/api/items/{item_id}/finalize", headers=lb, json={"comment": "定"}).status_code
+        == 200
+    )
+    st, body = cfg(hh)
+    assert st == 200
+    assert body["mode"] == "view"
+    assert body["track_changes_forced"] is False
+    assert body["config"]["document"]["permissions"]["edit"] is False
+
+
+def test_editor_display_name_with_unit():
+    from app.models import User, UserRole
+    from app.services.onlyoffice import editor_display_name
+
+    u = User(
+        username="u1",
+        password_hash="x",
+        display_name="张三",
+        role=UserRole.handler,
+        unit="治安管理行动大队",
+    )
+    assert editor_display_name(u) == "张三·治安管理行动大队"
+    u.unit = None
+    assert editor_display_name(u) == "张三"
