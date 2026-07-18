@@ -7,8 +7,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
-from app.routers import auth, dict_api, documents, items, oa, onlyoffice
+from app.routers import audit, auth, dict_api, documents, items, oa, onlyoffice
 from app.services.files import ensure_upload_dir
+from app.services.scheduler import start_background_tasks, stop_background_tasks
 from app.services.seed import seed_all
 from app.services.startup_checks import check_production_secrets
 
@@ -49,6 +50,12 @@ def on_startup() -> None:
         seed_all(db)
     finally:
         db.close()
+    start_background_tasks()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    stop_background_tasks()
 
 
 app.include_router(auth.router)
@@ -57,6 +64,7 @@ app.include_router(documents.router)
 app.include_router(dict_api.router)
 app.include_router(oa.router)
 app.include_router(onlyoffice.router)
+app.include_router(audit.router)
 
 
 @app.get("/api/health")

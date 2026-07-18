@@ -277,6 +277,16 @@ source .venv/bin/activate
 pytest -q
 ```
 
+## 定时 OA 本地维护（能力边界）
+
+配置项（见 `.env.example`）：
+
+- `OA_SCHEDULED_SYNC_MINUTES`：间隔分钟，**0=关闭**（默认）
+- `OA_SCHEDULED_SYNC_USER_DAYS`：只处理近 N 天有同步记录的用户
+- `OA_STALE_DAYS`：未关联事项且超过 N 天未同步的公文池记录可标为 inactive
+
+**限制说明**：系统不保存 OA 密码，定时任务**不能**重新登录 OA 拉取最新公文。任务仅在本地库做「过期未关联公文下线」整理。要更新公文池，仍须用户登录或手动同步。
+
 ## 上线前检查
 
 内网小范围试用 / 正式部署前，请逐项确认（改 `.env` 后需重启容器或进程）：

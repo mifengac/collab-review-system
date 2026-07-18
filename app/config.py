@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     oa_sync_page_size: int = 10
     oa_sync_modules: str = "todo,unread,done,read_done,running"
     oa_list_path: str = "/hmoa/s"
+    # 定时维护：分钟数，0=关闭。无 OA 密码不能重登，仅做本地公文池整理
+    oa_scheduled_sync_minutes: int = 0
+    # 仅处理近 N 天有同步记录的用户
+    oa_scheduled_sync_user_days: int = 7
+    # 未关联事项且超过 N 天未同步的公文池记录可标 inactive
+    oa_stale_days: int = 30
 
     # 模拟 OA（仅开发预览；DEBUG=false 时禁止启用）
     oa_mock_enabled: bool = False
