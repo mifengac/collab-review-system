@@ -277,6 +277,40 @@ source .venv/bin/activate
 pytest -q
 ```
 
+## 上线前检查
+
+内网小范围试用 / 正式部署前，请逐项确认（改 `.env` 后需重启容器或进程）：
+
+| 项 | 建议值 | 说明 |
+|----|--------|------|
+| `SECRET_KEY` | **随机长字符串** | 勿使用 `.env.example` 或代码里的示例值；否则 JWT 可被伪造。`DEBUG=false` 且仍为示例值时启动会打醒目警告 |
+| `DEBUG` | `false` | 生产关闭调试 |
+| `SEED_DEMO_USERS` | `false` | 生产禁止演示账号；若误开且 `DEBUG=false`，启动时**拒绝创建**演示用户并警告 |
+| `OA_MOCK_ENABLED` | `false` | 正式环境禁止模拟 OA（`true` 且 `DEBUG=false` 会直接拒绝启动） |
+| `AUTH_MODE` | `mixed`（接 OA 时） | 优先 OA；OA 故障时仅本地 admin 可维护登录 |
+| `OA_SYNC_ON_LOGIN` | `true`（接 OA 时） | 登录后自动拉公文池；仅联调通过后开启 |
+| `OA_BASE_URL` 等 | 内网真实 OA | 勿把真实个人密码写进仓库 |
+| 管理员密码 | 首次登录后立即修改 | `ADMIN_PASSWORD` **仅首次建库**写入；之后请在系统设置重置 |
+| 数据库备份 | 配置 cron | 见下方 `scripts/backup-db.sh` |
+| 镜像/端口 | `5002`、最新镜像 | 内网 `docker load` 后 `docker compose up -d` |
+
+### 数据库备份
+
+```bash
+# 金仓 / PostgreSQL：需本机有 pg_dump（或指定金仓 sys_dump）
+export DATABASE_URL='postgresql://user:pass@host:54321/collab_review'
+# 可选：SYS_DUMP_BIN=/path/to/sys_dump  或  PG_DUMP_BIN=/path/to/pg_dump
+bash scripts/backup-db.sh
+
+# SQLite：直接复制库文件到 backups/
+export DATABASE_URL='sqlite:////app/data/collab.db'
+bash scripts/backup-db.sh
+```
+
+- 备份目录默认 `backups/`（已 gitignore），文件名带时间戳；默认**保留最近 30 份**，可用 `BACKUP_KEEP` 调整。
+- 脚本通过 `PGPASSWORD` 传密码，**不会**把密码打印到终端。
+- crontab 示例见 `scripts/backup-db.sh` 文件头注释。
+
 ## Docker 运行
 
 ```bash

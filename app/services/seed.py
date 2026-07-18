@@ -1,11 +1,15 @@
 """首次启动：初始化字典与默认管理员。"""
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.auth import hash_password
 from app.config import get_settings
 from app.models import BusinessTag, Department, User, UserRole
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DEPARTMENTS = [
     "信息工作大队",
@@ -66,16 +70,23 @@ def seed_all(db: Session) -> None:
         )
 
     if settings.seed_demo_users:
-        for username, display_name, role, unit in DEMO_USERS:
-            if not db.query(User).filter(User.username == username).first():
-                db.add(
-                    User(
-                        username=username,
-                        password_hash=hash_password("Demo@123456"),
-                        display_name=display_name,
-                        role=role,
-                        unit=unit,
+        if not settings.debug:
+            # 生产（DEBUG=false）绝不创建演示账号，即使误开了 SEED_DEMO_USERS
+            logger.warning(
+                "SEED_DEMO_USERS=true 但 DEBUG=false：已拒绝创建演示账号。"
+                "生产环境请设置 SEED_DEMO_USERS=false；本地演示请同时 DEBUG=true。"
+            )
+        else:
+            for username, display_name, role, unit in DEMO_USERS:
+                if not db.query(User).filter(User.username == username).first():
+                    db.add(
+                        User(
+                            username=username,
+                            password_hash=hash_password("Demo@123456"),
+                            display_name=display_name,
+                            role=role,
+                            unit=unit,
+                        )
                     )
-                )
 
     db.commit()

@@ -26,6 +26,9 @@ data/
 *.sqlite
 *.sqlite3
 
+# 数据库备份（含业务数据，勿提交）
+backups/
+
 # 上传文件（保留目录占位）
 uploads/*
 !uploads/.gitkeep

@@ -10,6 +10,7 @@ from app.database import SessionLocal, init_db
 from app.routers import auth, dict_api, documents, items, oa
 from app.services.files import ensure_upload_dir
 from app.services.seed import seed_all
+from app.services.startup_checks import check_production_secrets
 
 settings = get_settings()
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,6 +39,8 @@ def on_startup() -> None:
         raise RuntimeError(
             "配置错误：OA_MOCK_ENABLED=true 时必须同时设置 DEBUG=true"
         )
+    # 示例 SECRET_KEY 等：只警告，不阻断启动
+    check_production_secrets(s)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ensure_upload_dir()
     init_db()
