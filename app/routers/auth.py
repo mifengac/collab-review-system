@@ -215,6 +215,8 @@ def _login_oa(db: Session, username: str, password: str) -> tuple[User, OASyncSt
 
 @router.get("/config", response_model=AuthConfigOut)
 def auth_config():
+    from app.services.onlyoffice import is_onlyoffice_ready
+
     settings = get_settings()
     return AuthConfigOut(
         auth_mode=settings.auth_mode_normalized,
@@ -222,6 +224,7 @@ def auth_config():
         title=settings.app_name,
         oa_sync_on_login=bool(settings.oa_sync_on_login),
         oa_mock_enabled=bool(settings.oa_mock_banner_enabled),
+        onlyoffice_enabled=is_onlyoffice_ready(settings),
     )
 
 

@@ -111,7 +111,7 @@ def test_smoke_success_path_no_token_leak():
                 200,
                 {
                     "access_token": token_value,
-                    "user": {"username": "handler1"},
+                    "user": {"username": "handler1", "id": 3},
                     "oa_sync": {"status": "partial", "enabled": True},
                 },
             )
@@ -142,6 +142,37 @@ def test_smoke_success_path_no_token_leak():
                         "flowinid": "MOCK-TODO-0001",
                         "linked_item_id": linked,
                     }
+                ],
+            )
+        # ONLYOFFICE 烟测：上传主材料
+        if "/upload" in url and method == "POST":
+            return _FakeResp(200, {"id": 55, "current_version": 1, "name": "smoke-main.docx"})
+        if "/editor-config" in url:
+            return _FakeResp(
+                200,
+                {
+                    "document_id": 55,
+                    "reserved": False,
+                    "editor_url": "http://127.0.0.1:5080/web-apps/apps/api/documents/api.js",
+                    "config": {
+                        "document": {
+                            "key": "crs-d55-v1-abc",
+                            "url": "http://collab-preview:5002/api/documents/55/raw?token=x",
+                        },
+                        "editorConfig": {
+                            "callbackUrl": "http://collab-preview:5002/api/onlyoffice/callback?document_id=55"
+                        },
+                    },
+                },
+            )
+        if "/api/onlyoffice/callback" in url and method == "POST":
+            return _FakeResp(200, {"error": 0})
+        if "/api/documents/55/versions" in url:
+            return _FakeResp(
+                200,
+                [
+                    {"version_no": 1, "sha256": "a" * 64},
+                    {"version_no": 2, "sha256": "b" * 64},
                 ],
             )
         return _FakeResp(404, {"detail": "nope"})
@@ -178,7 +209,7 @@ def test_smoke_wrong_stats_fails():
                 200,
                 {
                     "access_token": "t",
-                    "user": {"username": "handler1"},
+                    "user": {"username": "handler1", "id": 3},
                     "oa_sync": {"status": "partial"},
                 },
             )

@@ -24,6 +24,27 @@ services:
       retries: 6
       start_period: 10s
 
+  # ONLYOFFICE Document Server（镜像较大，内网需事先 docker load）
+  # 浏览器：http://127.0.0.1:${ONLYOFFICE_PREVIEW_PORT:-5080}
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: collab-review-onlyoffice
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: "preview-onlyoffice-jwt-secret"
+    ports:
+      - "${ONLYOFFICE_PREVIEW_PORT:-5080}:80"
+    networks:
+      - collab-preview-net
+    restart: unless-stopped
+    # DS 启动较慢；无标准健康接口时用欢迎页探测
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
   collab-preview:
     image: collab-review-system:preview
     container_name: collab-review-preview
@@ -57,11 +78,18 @@ services:
       OA_SYNC_MODULES: "todo,unread,done,read_done,running"
       OA_LIST_PATH: "/hmoa/s"
       OA_MOCK_ENABLED: "true"
+      # ONLYOFFICE 3a：浏览器走宿主机映射端口；容器间用服务名
+      ONLYOFFICE_ENABLED: "true"
+      ONLYOFFICE_PUBLIC_URL: "http://127.0.0.1:${ONLYOFFICE_PREVIEW_PORT:-5080}"
+      ONLYOFFICE_INTERNAL_URL: "http://onlyoffice"
+      ONLYOFFICE_JWT_SECRET: "preview-onlyoffice-jwt-secret"
+      APP_INTERNAL_URL: "http://collab-preview:5002"
     volumes:
       - collab_preview_data:/app/data
       - collab_preview_uploads:/app/uploads
     depends_on:
       - mock-oa
+      - onlyoffice
     networks:
       - collab-preview-net
     restart: unless-stopped

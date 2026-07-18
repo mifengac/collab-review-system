@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>在线编辑 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #bar {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    #placeholder { height: calc(100% - 40px); }
+    #err { color: var(--danger); padding: 24px; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <a href="javascript:history.back()">← 返回</a>
+    <span id="title">加载编辑器…</span>
+    <span class="hint" id="mode"></span>
+  </div>
+  <div id="placeholder"></div>
+  <div id="err" style="display:none"></div>
+  <script src="/assets/js/common.js"></script>
+  <script>
+    if (!requireAuth()) throw new Error("redirect");
+
+    const params = new URLSearchParams(location.search);
+    const documentId = params.get("document_id") || params.get("id");
+    const errEl = document.getElementById("err");
+    const ph = document.getElementById("placeholder");
+
+    function showErr(msg) {
+      ph.style.display = "none";
+      errEl.style.display = "block";
+      errEl.textContent = msg;
+    }
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error("无法加载 ONLYOFFICE api.js，请确认 Document Server 已启动且 ONLYOFFICE_PUBLIC_URL 可访问"));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function main() {
+      if (!documentId) {
+        showErr("缺少 document_id 参数");
+        return;
+      }
+      try {
+        const cfg = await api("/api/documents/" + documentId + "/editor-config");
+        if (cfg.reserved) {
+          showErr(cfg.message || "在线编辑未启用");
+          return;
+        }
+        if (!cfg.editor_url || !cfg.config) {
+          showErr("编辑配置不完整");
+          return;
+        }
+        document.getElementById("title").textContent =
+          (cfg.config.document && cfg.config.document.title) || ("文档 #" + documentId);
+        document.getElementById("mode").textContent =
+          "模式：" + (cfg.mode === "edit" ? "编辑" : "只读") + "（3a 基础对接，修订模式下轮再做）";
+
+        await loadScript(cfg.editor_url);
+        if (typeof DocsAPI === "undefined" || !DocsAPI.DocEditor) {
+          showErr("DocsAPI 未就绪");
+          return;
+        }
+        // eslint-disable-next-line no-new
+        new DocsAPI.DocEditor("placeholder", cfg.config);
+      } catch (e) {
+        showErr(e.message || String(e));
+      }
+    }
+    main();
+  </script>
+</body>
+</html>

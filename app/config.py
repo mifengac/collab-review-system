@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     # 模拟 OA（仅开发预览；DEBUG=false 时禁止启用）
     oa_mock_enabled: bool = False
 
+    # ONLYOFFICE Document Server（默认关闭；预览/内网部署后再开）
+    onlyoffice_enabled: bool = False
+    # 浏览器访问 Document Server 的地址（加载 api.js）
+    onlyoffice_public_url: str = ""
+    # 本系统容器访问 Document Server 的地址（可与 public 不同）
+    onlyoffice_internal_url: str = ""
+    # 与 Document Server 的 JWT_SECRET 一致
+    onlyoffice_jwt_secret: str = ""
+    # Document Server 回访本系统的基地址（下载文档、回调），如 http://collab-preview:5002
+    app_internal_url: str = ""
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

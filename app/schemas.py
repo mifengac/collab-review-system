@@ -59,6 +59,8 @@ class AuthConfigOut(BaseModel):
     oa_sync_on_login: bool = False
     # 仅 DEBUG=true 且 OA_MOCK_ENABLED=true 时为 true（前端显示模拟环境标识）
     oa_mock_enabled: bool = False
+    # ONLYOFFICE 是否已配置启用（前端控制「在线编辑」按钮）
+    onlyoffice_enabled: bool = False
 
 
 class UserOut(ORMModel):
@@ -337,7 +339,7 @@ class OAModuleStat(BaseModel):
     last_synced_at: datetime | None = None
 
 
-# ---------- Office 预留 ----------
+# ---------- ONLYOFFICE ----------
 class EditorConfigOut(BaseModel):
     document_id: int
     mode: str = "view"
@@ -345,6 +347,12 @@ class EditorConfigOut(BaseModel):
     message: str = "在线编辑功能预留，后续接入 ONLYOFFICE Docs"
     editor_url: str | None = None
     config: dict[str, Any] = {}
+
+
+class OnlyOfficeCallbackOut(BaseModel):
+    """Document Server 要求的回调响应，error=0 表示成功。"""
+
+    error: int = 0
 
 
 class MessageOut(BaseModel):

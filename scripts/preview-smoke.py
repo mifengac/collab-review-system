@@ -11,12 +11,20 @@ Docker 预览环境自动冒烟验收（仅标准库）。
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
+import io
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any
+
+# 与 docker-compose.preview.yml 中 ONLYOFFICE_JWT_SECRET 一致（仅预览）
+_OO_JWT_SECRET = "preview-onlyoffice-jwt-secret"
 
 # 公开演示账号（与 SEED_DEMO_USERS / mock_oa 一致；仅脚本内部使用，不打印）
 _SMOKE_USER = "handler1"
@@ -209,6 +217,161 @@ def check_items_mock_prefix(base: str, token: str) -> list[dict[str, Any]]:
     return data
 
 
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _make_hs256_jwt(payload: dict[str, Any], secret: str) -> str:
+    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    body = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+    sig = _b64url(
+        hmac.new(secret.encode("utf-8"), f"{header}.{body}".encode("ascii"), hashlib.sha256).digest()
+    )
+    return f"{header}.{body}.{sig}"
+
+
+def http_multipart_upload(
+    url: str,
+    *,
+    token: str,
+    fields: dict[str, str],
+    file_field: str,
+    filename: str,
+    file_bytes: bytes,
+    content_type: str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    timeout: float = 30.0,
+) -> tuple[int, Any]:
+    boundary = "----CRSSmokeBoundary7MA4YWxkTrZu0gW"
+    body = io.BytesIO()
+    for k, v in fields.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
+        body.write(str(v).encode("utf-8"))
+        body.write(b"\r\n")
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        (
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+    )
+    body.write(file_bytes)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    data = body.getvalue()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            status = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        raise SmokeError(f"无法连接预览服务: {url}") from exc
+    try:
+        parsed = json.loads(raw) if raw.strip() else None
+    except json.JSONDecodeError as exc:
+        raise SmokeError(f"上传接口返回非 JSON（HTTP {status}）") from exc
+    return status, parsed
+
+
+def check_onlyoffice_callback_save(base: str, token: str, item_id: int, user_id: int) -> int:
+    """
+    上传主材料 → 取 editor-config → 模拟 DS 回调 status=2 → 断言新版本。
+    不依赖真实 Document Server 容器（用已有 raw 下载 URL 作为回调 url）。
+    """
+    # 最小合法 OOXML 头 + 填充，通过魔数校验
+    docx = b"PK\x03\x04" + b"\x00" * 64
+    status, doc = http_multipart_upload(
+        f"{base}/api/items/{item_id}/upload",
+        token=token,
+        fields={"kind": "main"},
+        file_field="file",
+        filename="smoke-main.docx",
+        file_bytes=docx,
+    )
+    assert_status(status, 200, "上传主材料")
+    if not isinstance(doc, dict) or not doc.get("id"):
+        raise SmokeError("上传未返回文档 id")
+    document_id = int(doc["id"])
+    ver_before = int(doc.get("current_version") or 0)
+    if ver_before < 1:
+        raise SmokeError("上传后 current_version 异常")
+
+    status, cfg = http_json(
+        "GET", f"{base}/api/documents/{document_id}/editor-config", token=token
+    )
+    assert_status(status, 200, "editor-config")
+    if not isinstance(cfg, dict):
+        raise SmokeError("editor-config 响应异常")
+    if cfg.get("reserved") is True:
+        raise SmokeError("ONLYOFFICE 未启用（editor-config.reserved=true）")
+    conf = cfg.get("config") or {}
+    file_url = (conf.get("document") or {}).get("url")
+    key = (conf.get("document") or {}).get("key")
+    if not file_url or not key:
+        raise SmokeError("editor-config 缺少 document.url 或 key")
+
+    # 模拟 DS 回调：用容器内可达的 raw URL 作为「编辑后文件」
+    body = {
+        "status": 2,
+        "url": file_url,
+        "key": key,
+        "users": [str(user_id)],
+    }
+    oo_token = _make_hs256_jwt(body, _OO_JWT_SECRET)
+    # 手动 POST 带 Authorization
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/api/onlyoffice/callback?document_id={document_id}",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {oo_token}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60.0) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            status = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        raise SmokeError("回调接口无法连接") from exc
+    try:
+        parsed = json.loads(raw) if raw.strip() else None
+    except json.JSONDecodeError as exc:
+        raise SmokeError(f"回调返回非 JSON（HTTP {status}）") from exc
+    if status != 200:
+        raise SmokeError(f"回调期望 HTTP 200，实际 {status}")
+    if not isinstance(parsed, dict) or int(parsed.get("error", 1)) != 0:
+        raise SmokeError(f"回调保存失败 error={parsed}")
+
+    status, versions = http_json(
+        "GET", f"{base}/api/documents/{document_id}/versions", token=token
+    )
+    assert_status(status, 200, "版本列表")
+    if not isinstance(versions, list) or not versions:
+        raise SmokeError("版本列表为空")
+    max_ver = max(int(v.get("version_no") or 0) for v in versions if isinstance(v, dict))
+    if max_ver <= ver_before:
+        raise SmokeError(f"回调后未产生新版本（仍为 v{max_ver}）")
+    return document_id
+
+
 def check_create_collab_idempotent(
     base: str, token: str, oa_id: int
 ) -> tuple[int, int]:
@@ -253,13 +416,18 @@ def run_smoke(base_url: str) -> dict[str, Any]:
     base = base_url.rstrip("/")
     check_health(base)
     check_auth_config(base)
-    token, _login_body = login(base)
+    token, login_body = login(base)
+    user = (login_body or {}).get("user") or {}
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        raise SmokeError("登录响应缺少 user.id")
     # 立刻丢弃 token 的字符串引用前先完成校验；不打印
     counts = check_stats(base, token)
     log = check_sync_log(base, token)
     items = check_items_mock_prefix(base, token)
     oa_id = int(items[0]["id"])
     oa_id, item_id = check_create_collab_idempotent(base, token, oa_id)
+    document_id = check_onlyoffice_callback_save(base, token, item_id, user_id)
     # 清除 token 引用
     token = ""
     del token
@@ -274,6 +442,7 @@ def run_smoke(base_url: str) -> dict[str, Any]:
         "truncated": truncated,
         "oa_id": oa_id,
         "item_id": item_id,
+        "document_id": document_id,
     }
 
 

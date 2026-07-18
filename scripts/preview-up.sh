@@ -13,10 +13,12 @@ MOCK_NAME="collab-review-mock-oa"
 VOL_DATA="collab_preview_data"
 VOL_UPLOADS="collab_preview_uploads"
 export PREVIEW_PORT="${PREVIEW_PORT:-5010}"
+export ONLYOFFICE_PREVIEW_PORT="${ONLYOFFICE_PREVIEW_PORT:-5080}"
 MOCK_PORT_INTERNAL=5099
 APP_PORT_INTERNAL=5002
 FORMAL_NAME="collab-review-system"
 FORMAL_PORT=5002
+OO_NAME="collab-review-onlyoffice"
 
 COMPOSE_FILE="docker-compose.preview.yml"
 
@@ -113,7 +115,13 @@ fi
 
 log "工作目录: $ROOT"
 log "PREVIEW_PORT=${PREVIEW_PORT}"
+log "ONLYOFFICE_PREVIEW_PORT=${ONLYOFFICE_PREVIEW_PORT}"
 check_preview_port
+if docker image inspect onlyoffice/documentserver:latest >/dev/null 2>&1; then
+  log "已检测到 onlyoffice/documentserver:latest"
+else
+  log "警告: 本地无 onlyoffice/documentserver:latest 镜像。compose 可能尝试拉取（内网需事先 docker load）。"
+fi
 
 log "构建镜像 $IMAGE_NAME （强制最新代码）"
 docker build -t "$IMAGE_NAME" "$ROOT"

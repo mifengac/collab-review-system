@@ -179,7 +179,12 @@ def test_full_workflow(client: TestClient):
 
     r = client.get(f"/api/documents/{document_id}/editor-config", headers=h)
     assert r.status_code == 200
-    assert r.json()["reserved"] is True
+    ec = r.json()
+    # 默认未启用 ONLYOFFICE 时 reserved=true；若测试进程中启用了配置则返回完整 config
+    if ec.get("reserved"):
+        assert ec["reserved"] is True
+    else:
+        assert ec.get("config") and ec.get("editor_url")
 
     r = client.post(f"/api/office/callback/{document_id}")
     assert r.status_code == 200

@@ -185,7 +185,13 @@
                   <span class="hint">当前 v${d.current_version}</span>
                 </span>
                 <span>
-                  <button class="btn btn-sm reserved-btn" type="button" data-editor="${d.id}">在线编辑（预留）</button>
+                  ${
+                    d.kind === "main" && window.__OO_ENABLED
+                      ? `<button class="btn btn-sm btn-primary" type="button" data-editor="${d.id}">在线编辑</button>`
+                      : d.kind === "main"
+                        ? `<button class="btn btn-sm reserved-btn" type="button" data-editor="${d.id}" style="display:none">在线编辑</button>`
+                        : ""
+                  }
                 </span>
               </div>
               <div class="panel-bd table-wrap">
@@ -498,20 +504,24 @@
       });
 
       root.querySelectorAll("[data-editor]").forEach((btn) => {
-        btn.onclick = async () => {
-          try {
-            const cfg = await api("/api/documents/" + btn.dataset.editor + "/editor-config");
-            alert(cfg.message + "\n\n接口已预留：GET /api/documents/{id}/editor-config\nPOST /api/office/callback/{document_id}");
-          } catch (e) {
-            toast(e.message, "error");
-          }
+        btn.onclick = () => {
+          const id = btn.dataset.editor;
+          window.open("/editor.html?document_id=" + encodeURIComponent(id), "_blank");
         };
       });
     }
 
-    reload().catch((e) => {
-      root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
-    });
+    (async () => {
+      try {
+        const cfg = await api("/api/auth/config");
+        window.__OO_ENABLED = !!cfg.onlyoffice_enabled;
+      } catch (e) {
+        window.__OO_ENABLED = false;
+      }
+      reload().catch((e) => {
+        root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
+      });
+    })();
   </script>
 </body>
 </html>

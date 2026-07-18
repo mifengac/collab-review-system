@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
-from app.routers import auth, dict_api, documents, items, oa
+from app.routers import auth, dict_api, documents, items, oa, onlyoffice
 from app.services.files import ensure_upload_dir
 from app.services.seed import seed_all
 from app.services.startup_checks import check_production_secrets
@@ -56,6 +56,7 @@ app.include_router(items.router)
 app.include_router(documents.router)
 app.include_router(dict_api.router)
 app.include_router(oa.router)
+app.include_router(onlyoffice.router)
 
 
 @app.get("/api/health")

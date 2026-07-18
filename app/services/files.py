@@ -161,3 +161,69 @@ def resolve_file_path(version: FileVersion) -> Path:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件实体不存在")
     return path
+
+
+def save_bytes_as_new_version(
+    db: Session,
+    item: Item,
+    actor: User,
+    doc: Document,
+    raw: bytes,
+    *,
+    original_filename: str,
+    content_type: str | None = None,
+    action_detail_prefix: str = "onlyoffice",
+) -> FileVersion:
+    """将字节内容写入文档的新版本（不可覆盖历史）。供 ONLYOFFICE 回调等使用。"""
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="文件超过 50MB 限制")
+
+    original = _safe_name(original_filename or "edited.docx")
+    ext = Path(original).suffix.lower() or ".docx"
+    if ext != ".docx":
+        raise HTTPException(status_code=400, detail="在线编辑仅支持 docx")
+    validate_file_content(ext, raw)
+
+    sha = _sha256_bytes(raw)
+    upload_root = ensure_upload_dir()
+    item_dir = upload_root / str(item.id)
+    item_dir.mkdir(parents=True, exist_ok=True)
+
+    next_ver = (doc.current_version or 0) + 1
+    stored_name = f"{doc.id}_v{next_ver}_{uuid.uuid4().hex[:8]}{ext}"
+    stored_path = item_dir / stored_name
+    stored_path.write_bytes(raw)
+
+    rel_path = str(Path(str(item.id)) / stored_name)
+    version = FileVersion(
+        document_id=doc.id,
+        version_no=next_ver,
+        original_filename=original,
+        stored_path=rel_path,
+        content_type=content_type
+        or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        file_size=len(raw),
+        sha256=sha,
+        uploader_id=actor.id,
+    )
+    doc.current_version = next_ver
+    db.add(version)
+    db.flush()
+
+    write_log(
+        db,
+        item,
+        actor,
+        ActionType.upload,
+        comment=None,
+        detail=(
+            f"{action_detail_prefix} {original} v{next_ver} "
+            f"({len(raw)} bytes, sha256={sha[:12]}…)"
+        ),
+    )
+    db.commit()
+    db.refresh(doc)
+    db.refresh(version)
+    return version

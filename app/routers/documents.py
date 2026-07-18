@@ -1,14 +1,21 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import CurrentUser
+from app.config import get_settings
 from app.database import get_db
 from app.models import ActionType, Document, FileKind, FileVersion, Item
 from app.schemas import DocumentOut, EditorConfigOut, FileVersionOut, MessageOut
 from app.services.files import resolve_file_path, save_upload
+from app.services.onlyoffice import (
+    build_editor_config,
+    current_version_file_path,
+    is_onlyoffice_ready,
+    verify_download_token,
+)
 from app.services.permissions import (
     ensure_can_download_document,
     ensure_can_upload_document,
@@ -127,7 +134,31 @@ def list_versions(
     return vers
 
 
-# ---------- ONLYOFFICE 预留 ----------
+@router.get("/documents/{document_id}/raw")
+def download_document_raw(
+    document_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str, Query(description="短时效下载 JWT")],
+):
+    """
+    Document Server 拉取文档用（无用户登录态）。
+    须携带 15 分钟有效、purpose=oo_download 的签名 token。
+    """
+    if not token or not token.strip():
+        raise HTTPException(status_code=401, detail="缺少下载令牌")
+    verify_download_token(token.strip(), document_id)
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    version, path = current_version_file_path(db, doc)
+    return FileResponse(
+        path,
+        filename=version.original_filename,
+        media_type=version.content_type
+        or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
 @router.get("/documents/{document_id}/editor-config", response_model=EditorConfigOut)
 def editor_config(
     document_id: int,
@@ -141,35 +172,44 @@ def editor_config(
     if not item:
         raise HTTPException(status_code=404, detail="事项不存在")
     ensure_can_view_item(user, item)
-    return EditorConfigOut(
-        document_id=document_id,
-        mode="view",
-        reserved=True,
-        message="在线编辑功能预留，后续可单独部署 ONLYOFFICE Docs 后接入",
-        editor_url=None,
-        config={
-            "document": {
-                "fileType": "docx",
-                "key": f"doc-{document_id}-v{doc.current_version}",
-                "title": doc.name,
-                "url": None,
+
+    settings = get_settings()
+    if not is_onlyoffice_ready(settings):
+        return EditorConfigOut(
+            document_id=document_id,
+            mode="view",
+            reserved=True,
+            message="在线编辑未启用。请配置 ONLYOFFICE_* 与 APP_INTERNAL_URL 后开启 ONLYOFFICE_ENABLED=true",
+            editor_url=None,
+            config={
+                "document": {
+                    "fileType": "docx",
+                    "key": f"doc-{document_id}-v{doc.current_version}",
+                    "title": doc.name,
+                    "url": None,
+                },
+                "editorConfig": {
+                    "mode": "view",
+                    "lang": "zh-CN",
+                    "callbackUrl": f"/api/onlyoffice/callback?document_id={document_id}",
+                },
             },
-            "editorConfig": {
-                "mode": "view",
-                "lang": "zh-CN",
-                "callbackUrl": f"/api/office/callback/{document_id}",
-            },
-        },
-    )
+        )
+
+    payload = build_editor_config(db, doc, item, user, settings)
+    return EditorConfigOut.model_validate(payload)
 
 
 @router.post("/office/callback/{document_id}", response_model=MessageOut)
-async def office_callback(
+async def office_callback_legacy(
     document_id: int,
     db: Annotated[Session, Depends(get_db)],
 ):
-    """ONLYOFFICE 回调预留：第一版仅返回 ok，不落库。"""
+    """旧预留路径兼容：请改用 POST /api/onlyoffice/callback。"""
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
-        return MessageOut(message="document not found (reserved)", detail={"error": 1})
-    return MessageOut(message="ok", detail={"error": 0, "reserved": True})
+        return MessageOut(message="document not found", detail={"error": 1})
+    return MessageOut(
+        message="请改用 /api/onlyoffice/callback",
+        detail={"error": 0, "deprecated": True},
+    )

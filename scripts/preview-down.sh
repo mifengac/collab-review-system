@@ -9,6 +9,7 @@ cd "$ROOT"
 
 APP_NAME="collab-review-preview"
 MOCK_NAME="collab-review-mock-oa"
+OO_NAME="collab-review-onlyoffice"
 NETWORK="collab-preview-net"
 VOL_DATA="collab_preview_data"
 VOL_UPLOADS="collab_preview_uploads"
@@ -54,7 +55,7 @@ if [ -n "$COMPOSE_CMD" ] && [ -f "$COMPOSE_FILE" ]; then
   $COMPOSE_CMD -f "$COMPOSE_FILE" down --remove-orphans || true
 else
   log "停止并删除预览容器"
-  docker rm -f "$APP_NAME" "$MOCK_NAME" 2>/dev/null || true
+  docker rm -f "$APP_NAME" "$MOCK_NAME" "$OO_NAME" 2>/dev/null || true
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
     log "删除预览网络 $NETWORK"
     docker network rm "$NETWORK" 2>/dev/null || true
@@ -62,7 +63,7 @@ else
 fi
 
 # 再次确保预览容器已删（compose 可能未装）
-docker rm -f "$APP_NAME" "$MOCK_NAME" 2>/dev/null || true
+docker rm -f "$APP_NAME" "$MOCK_NAME" "$OO_NAME" 2>/dev/null || true
 if docker network inspect "$NETWORK" >/dev/null 2>&1; then
   # 若仍有网络且无容器占用则删
   docker network rm "$NETWORK" 2>/dev/null || true
