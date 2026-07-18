@@ -25,11 +25,225 @@
       ["viewer", "只读"],
     ];
 
-    function roleOptions(selected) {
-      return ROLES.map(
+    /** 批量改角色不可选 admin（后端也会拒绝） */
+    const BATCH_ROLES = ROLES.filter(([v]) => v !== "admin");
+
+    function roleOptions(selected, roles) {
+      return (roles || ROLES).map(
         ([v, lab]) =>
           `<option value="${v}" ${v === selected ? "selected" : ""}>${lab}</option>`
       ).join("");
+    }
+
+    let usersCache = [];
+
+    function buildUserQuery() {
+      const params = new URLSearchParams();
+      const unit = (document.getElementById("userUnitFilter") || {}).value || "";
+      const q = (document.getElementById("userKw") || {}).value || "";
+      if (unit) params.set("unit", unit);
+      if (q.trim()) params.set("q", q.trim());
+      const s = params.toString();
+      return "/api/auth/users" + (s ? "?" + s : "");
+    }
+
+    function uniqueUnits(users) {
+      const set = new Set();
+      users.forEach((u) => {
+        if (u.unit) set.add(u.unit);
+      });
+      return Array.from(set).sort((a, b) => a.localeCompare(b, "zh"));
+    }
+
+    function renderUserRows(users) {
+      return users
+        .map(
+          (u) => `<tr>
+            <td>${
+              isAdmin
+                ? `<input type="checkbox" class="user-check" data-id="${u.id}" ${
+                    u.role === "admin" ? "disabled title=\"管理员不可批量改角色\"" : ""
+                  } />`
+                : ""
+            }</td>
+            <td>${u.id}</td>
+            <td>${escapeHtml(u.username)}</td>
+            <td>${escapeHtml(u.display_name)}</td>
+            <td>${roleLabel(u.role)}</td>
+            <td>${escapeHtml(u.unit || "—")}</td>
+            <td>${u.is_active ? '<span class="badge badge-done">启用</span>' : '<span class="badge badge-cancel">禁用</span>'}</td>
+            ${
+              isAdmin
+                ? `<td>
+              <button class="btn btn-sm" type="button" data-edit="${u.id}">编辑</button>
+              <button class="btn btn-sm" type="button" data-pwd="${u.id}">重置密码</button>
+            </td>`
+                : ""
+            }
+          </tr>`
+        )
+        .join("");
+    }
+
+    function selectedUserIds() {
+      return Array.from(root.querySelectorAll(".user-check:checked")).map((el) =>
+        Number(el.dataset.id)
+      );
+    }
+
+    function bindUserAdminHandlers(users) {
+      if (!isAdmin) return;
+
+      const um = document.getElementById("userModal");
+      const closeUm = () => um.classList.remove("show");
+      document.getElementById("userModalClose").onclick = closeUm;
+      document.getElementById("userModalCancel").onclick = closeUm;
+
+      let mode = "create";
+
+      document.getElementById("btnNewUser").onclick = () => {
+        mode = "create";
+        document.getElementById("userModalTitle").textContent = "新增用户";
+        document.getElementById("editUserId").value = "";
+        document.getElementById("fUsername").value = "";
+        document.getElementById("fUsername").disabled = false;
+        document.getElementById("rowUsername").style.display = "";
+        document.getElementById("rowPassword").style.display = "";
+        document.getElementById("fPassword").value = "";
+        document.getElementById("fDisplay").value = "";
+        document.getElementById("fRole").value = "handler";
+        document.getElementById("fUnit").value = "";
+        document.getElementById("rowActive").style.display = "none";
+        um.classList.add("show");
+      };
+
+      const btnBatch = document.getElementById("btnBatchRole");
+      if (btnBatch) {
+        btnBatch.onclick = async () => {
+          const ids = selectedUserIds();
+          const role = document.getElementById("batchRole").value;
+          if (!ids.length) {
+            toast("请先勾选要调整的用户", "error");
+            return;
+          }
+          if (!role || role === "admin") {
+            toast("请选择有效目标角色", "error");
+            return;
+          }
+          if (!confirm(`确认将选中的 ${ids.length} 人角色改为「${roleLabel(role)}」？`)) {
+            return;
+          }
+          try {
+            const r = await api("/api/auth/users/batch-role", {
+              method: "PATCH",
+              body: JSON.stringify({ user_ids: ids, role }),
+            });
+            toast(r.message || "批量更新完成", "success");
+            await reloadUsersOnly();
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      }
+
+      const chkAll = document.getElementById("chkAllUsers");
+      if (chkAll) {
+        chkAll.onclick = () => {
+          root.querySelectorAll(".user-check:not(:disabled)").forEach((el) => {
+            el.checked = chkAll.checked;
+          });
+        };
+      }
+
+      root.querySelectorAll("[data-edit]").forEach((btn) => {
+        btn.onclick = () => {
+          const u = users.find((x) => String(x.id) === btn.dataset.edit);
+          if (!u) return;
+          mode = "edit";
+          document.getElementById("userModalTitle").textContent = "编辑用户";
+          document.getElementById("editUserId").value = u.id;
+          document.getElementById("rowUsername").style.display = "none";
+          document.getElementById("rowPassword").style.display = "none";
+          document.getElementById("fDisplay").value = u.display_name || "";
+          document.getElementById("fRole").value = u.role;
+          document.getElementById("fUnit").value = u.unit || "";
+          document.getElementById("rowActive").style.display = "";
+          document.getElementById("fActive").value = u.is_active ? "true" : "false";
+          um.classList.add("show");
+        };
+      });
+
+      root.querySelectorAll("[data-pwd]").forEach((btn) => {
+        btn.onclick = async () => {
+          const pwd = prompt("请输入新密码（至少 6 位）");
+          if (!pwd) return;
+          if (pwd.length < 6) {
+            toast("密码至少 6 位", "error");
+            return;
+          }
+          try {
+            await api("/api/auth/users/" + btn.dataset.pwd, {
+              method: "PATCH",
+              body: JSON.stringify({ password: pwd }),
+            });
+            toast("密码已重置", "success");
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        };
+      });
+
+      document.getElementById("userModalOk").onclick = async () => {
+        try {
+          if (mode === "create") {
+            const body = {
+              username: document.getElementById("fUsername").value.trim(),
+              password: document.getElementById("fPassword").value,
+              display_name: document.getElementById("fDisplay").value.trim(),
+              role: document.getElementById("fRole").value,
+              unit: document.getElementById("fUnit").value.trim() || null,
+            };
+            if (!body.username || !body.password || !body.display_name) {
+              toast("请填写必填项", "error");
+              return;
+            }
+            await api("/api/auth/users", { method: "POST", body: JSON.stringify(body) });
+            toast("用户已创建", "success");
+          } else {
+            const uid = document.getElementById("editUserId").value;
+            const body = {
+              display_name: document.getElementById("fDisplay").value.trim(),
+              role: document.getElementById("fRole").value,
+              unit: document.getElementById("fUnit").value.trim() || null,
+              is_active: document.getElementById("fActive").value === "true",
+            };
+            await api("/api/auth/users/" + uid, {
+              method: "PATCH",
+              body: JSON.stringify(body),
+            });
+            toast("用户已更新", "success");
+          }
+          closeUm();
+          load();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+    }
+
+    async function reloadUsersOnly() {
+      if (!canListUsers) return;
+      const users = await api(buildUserQuery());
+      usersCache = users;
+      const tbody = document.getElementById("userTbody");
+      if (tbody) {
+        tbody.innerHTML = users.length
+          ? renderUserRows(users)
+          : `<tr><td colspan="${isAdmin ? 8 : 7}" class="empty-row">无匹配用户</td></tr>`;
+      }
+      const cnt = document.getElementById("userCnt");
+      if (cnt) cnt.textContent = `共 ${users.length} 人`;
+      bindUserAdminHandlers(users);
     }
 
     async function load() {
@@ -46,6 +260,8 @@
         const tags = results[1];
         const oaInbox = results[2];
         const users = canListUsers ? results[3] : [];
+        usersCache = users;
+        const units = uniqueUnits(users);
 
         root.innerHTML = `
           <div class="panel">
@@ -65,44 +281,54 @@
               ? `
           <div class="panel">
             <div class="panel-hd">
-              <span>用户管理</span>
+              <span>用户管理 <span class="hint" id="userCnt">共 ${users.length} 人</span></span>
               ${
                 isAdmin
                   ? `<button class="btn btn-sm btn-primary" type="button" id="btnNewUser">＋ 新增用户</button>`
                   : `<span class="hint">仅管理员可新增/修改用户</span>`
               }
             </div>
-            <div class="panel-bd table-wrap">
+            <div class="panel-bd">
+              <div class="toolbar" style="margin-bottom:10px">
+                <select id="userUnitFilter" style="min-width:140px">
+                  <option value="">全部部门</option>
+                  ${units
+                    .map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`)
+                    .join("")}
+                </select>
+                <input type="text" id="userKw" placeholder="姓名 / 工号" style="width:160px" />
+                <button class="btn" type="button" id="btnUserSearch">查询</button>
+                ${
+                  isAdmin
+                    ? `
+                <div class="spacer"></div>
+                <select id="batchRole" style="min-width:120px">
+                  ${roleOptions("handler", BATCH_ROLES)}
+                </select>
+                <button class="btn btn-sm btn-primary" type="button" id="btnBatchRole">批量设角色</button>
+                `
+                    : ""
+                }
+              </div>
+              <div class="table-wrap">
               <table class="data">
                 <thead><tr>
+                  ${isAdmin ? `<th style="width:36px"><input type="checkbox" id="chkAllUsers" title="全选当前页" /></th>` : ""}
                   <th>ID</th><th>用户名</th><th>姓名</th><th>角色</th><th>单位</th><th>状态</th>
                   ${isAdmin ? "<th>操作</th>" : ""}
                 </tr></thead>
-                <tbody>
-                  ${users
-                    .map(
-                      (u) => `<tr>
-                    <td>${u.id}</td>
-                    <td>${escapeHtml(u.username)}</td>
-                    <td>${escapeHtml(u.display_name)}</td>
-                    <td>${roleLabel(u.role)}</td>
-                    <td>${escapeHtml(u.unit || "—")}</td>
-                    <td>${u.is_active ? '<span class="badge badge-done">启用</span>' : '<span class="badge badge-cancel">禁用</span>'}</td>
-                    ${
-                      isAdmin
-                        ? `<td>
-                      <button class="btn btn-sm" type="button" data-edit="${u.id}">编辑</button>
-                      <button class="btn btn-sm" type="button" data-pwd="${u.id}">重置密码</button>
-                    </td>`
-                        : ""
-                    }
-                  </tr>`
-                    )
-                    .join("")}
+                <tbody id="userTbody">
+                  ${
+                    users.length
+                      ? renderUserRows(users)
+                      : `<tr><td colspan="${isAdmin ? 8 : 7}" class="empty-row">无用户</td></tr>`
+                  }
                 </tbody>
               </table>
+              </div>
               <p class="hint" style="margin-top:8px">
                 演示账号（SEED_DEMO_USERS=true）：office1 / supervisor1 / handler1 / leader_a / leader_b，密码 Demo@123456。
+                批量设角色不会改动管理员账号，也不能把任何人提权为管理员。
               </p>
             </div>
           </div>`
@@ -235,105 +461,15 @@
           }
         };
 
-        if (!isAdmin) return;
-
-        const um = document.getElementById("userModal");
-        const closeUm = () => um.classList.remove("show");
-        document.getElementById("userModalClose").onclick = closeUm;
-        document.getElementById("userModalCancel").onclick = closeUm;
-
-        let mode = "create";
-
-        document.getElementById("btnNewUser").onclick = () => {
-          mode = "create";
-          document.getElementById("userModalTitle").textContent = "新增用户";
-          document.getElementById("editUserId").value = "";
-          document.getElementById("fUsername").value = "";
-          document.getElementById("fUsername").disabled = false;
-          document.getElementById("rowUsername").style.display = "";
-          document.getElementById("rowPassword").style.display = "";
-          document.getElementById("fPassword").value = "";
-          document.getElementById("fDisplay").value = "";
-          document.getElementById("fRole").value = "handler";
-          document.getElementById("fUnit").value = "";
-          document.getElementById("rowActive").style.display = "none";
-          um.classList.add("show");
-        };
-
-        root.querySelectorAll("[data-edit]").forEach((btn) => {
-          btn.onclick = () => {
-            const u = users.find((x) => String(x.id) === btn.dataset.edit);
-            if (!u) return;
-            mode = "edit";
-            document.getElementById("userModalTitle").textContent = "编辑用户";
-            document.getElementById("editUserId").value = u.id;
-            document.getElementById("rowUsername").style.display = "none";
-            document.getElementById("rowPassword").style.display = "none";
-            document.getElementById("fDisplay").value = u.display_name || "";
-            document.getElementById("fRole").value = u.role;
-            document.getElementById("fUnit").value = u.unit || "";
-            document.getElementById("rowActive").style.display = "";
-            document.getElementById("fActive").value = u.is_active ? "true" : "false";
-            um.classList.add("show");
+        if (canListUsers) {
+          document.getElementById("btnUserSearch").onclick = () => reloadUsersOnly();
+          document.getElementById("userKw").onkeydown = (ev) => {
+            if (ev.key === "Enter") reloadUsersOnly();
           };
-        });
+          document.getElementById("userUnitFilter").onchange = () => reloadUsersOnly();
+        }
 
-        root.querySelectorAll("[data-pwd]").forEach((btn) => {
-          btn.onclick = async () => {
-            const pwd = prompt("请输入新密码（至少 6 位）");
-            if (!pwd) return;
-            if (pwd.length < 6) {
-              toast("密码至少 6 位", "error");
-              return;
-            }
-            try {
-              await api("/api/auth/users/" + btn.dataset.pwd, {
-                method: "PATCH",
-                body: JSON.stringify({ password: pwd }),
-              });
-              toast("密码已重置", "success");
-            } catch (e) {
-              toast(e.message, "error");
-            }
-          };
-        });
-
-        document.getElementById("userModalOk").onclick = async () => {
-          try {
-            if (mode === "create") {
-              const body = {
-                username: document.getElementById("fUsername").value.trim(),
-                password: document.getElementById("fPassword").value,
-                display_name: document.getElementById("fDisplay").value.trim(),
-                role: document.getElementById("fRole").value,
-                unit: document.getElementById("fUnit").value.trim() || null,
-              };
-              if (!body.username || !body.password || !body.display_name) {
-                toast("请填写必填项", "error");
-                return;
-              }
-              await api("/api/auth/users", { method: "POST", body: JSON.stringify(body) });
-              toast("用户已创建", "success");
-            } else {
-              const uid = document.getElementById("editUserId").value;
-              const body = {
-                display_name: document.getElementById("fDisplay").value.trim(),
-                role: document.getElementById("fRole").value,
-                unit: document.getElementById("fUnit").value.trim() || null,
-                is_active: document.getElementById("fActive").value === "true",
-              };
-              await api("/api/auth/users/" + uid, {
-                method: "PATCH",
-                body: JSON.stringify(body),
-              });
-              toast("用户已更新", "success");
-            }
-            closeUm();
-            load();
-          } catch (e) {
-            toast(e.message, "error");
-          }
-        };
+        bindUserAdminHandlers(users);
       } catch (e) {
         root.innerHTML = `<p class="hint" style="color:var(--danger)">${escapeHtml(e.message)}</p>`;
       }

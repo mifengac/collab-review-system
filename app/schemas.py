@@ -86,6 +86,19 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=6)
 
 
+class BatchRoleUpdate(BaseModel):
+    """管理员批量调整角色。"""
+
+    user_ids: list[int] = Field(min_length=1, max_length=500)
+    role: UserRole
+
+
+class BatchRoleUpdateResult(BaseModel):
+    updated: int
+    skipped: int = 0
+    message: str
+
+
 class UserOption(ORMModel):
     """新建/分派事项时的选人列表（精简字段）。"""
 

@@ -4,7 +4,8 @@ import logging
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -18,6 +19,8 @@ from app.database import get_db
 from app.models import User, UserRole
 from app.schemas import (
     AuthConfigOut,
+    BatchRoleUpdate,
+    BatchRoleUpdateResult,
     LoginRequest,
     OASyncStatusOut,
     TokenResponse,
@@ -277,12 +280,31 @@ def user_options(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
 
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(user: CurrentUser, db: Annotated[Session, Depends(get_db)]):
-    if user.role == UserRole.admin:
-        return db.query(User).order_by(User.id).all()
+def list_users(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    unit: Annotated[str | None, Query(description="按部门/单位精确筛选")] = None,
+    q: Annotated[str | None, Query(description="姓名或工号关键字")] = None,
+):
+    if user.role not in (UserRole.admin, UserRole.office_clerk):
+        raise HTTPException(status_code=403, detail="无权查看用户管理列表，请使用选人接口")
+
+    query = db.query(User)
     if user.role == UserRole.office_clerk:
-        return db.query(User).filter(User.is_active.is_(True)).order_by(User.id).all()
-    raise HTTPException(status_code=403, detail="无权查看用户管理列表，请使用选人接口")
+        query = query.filter(User.is_active.is_(True))
+
+    unit_val = (unit or "").strip()
+    if unit_val:
+        query = query.filter(User.unit == unit_val)
+
+    keyword = (q or "").strip()
+    if keyword:
+        like = f"%{keyword}%"
+        query = query.filter(
+            or_(User.username.ilike(like), User.display_name.ilike(like))
+        )
+
+    return query.order_by(User.id).all()
 
 
 @router.post("/users", response_model=UserOut)
@@ -306,6 +328,68 @@ def create_user(
     db.commit()
     db.refresh(u)
     return u
+
+
+@router.patch("/users/batch-role", response_model=BatchRoleUpdateResult)
+def batch_update_role(
+    body: BatchRoleUpdate,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """管理员批量改角色：禁止提权为 admin，禁止改动当前为 admin 的账号。"""
+    if user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="仅管理员可批量修改角色")
+    if body.role == UserRole.admin:
+        raise HTTPException(status_code=400, detail="不允许通过批量接口将任何人设为管理员")
+
+    # 去重并保持稳定顺序
+    seen: set[int] = set()
+    user_ids: list[int] = []
+    for uid in body.user_ids:
+        if uid not in seen:
+            seen.add(uid)
+            user_ids.append(uid)
+
+    targets = db.query(User).filter(User.id.in_(user_ids)).all()
+    by_id = {u.id: u for u in targets}
+    missing = [uid for uid in user_ids if uid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"用户不存在: {', '.join(str(x) for x in missing[:10])}",
+        )
+
+    admin_hits = [u for u in targets if u.role == UserRole.admin]
+    if admin_hits:
+        names = ", ".join(u.username for u in admin_hits[:10])
+        raise HTTPException(
+            status_code=400,
+            detail=f"不允许修改管理员账号的角色（防锁死）: {names}",
+        )
+
+    updated = 0
+    skipped = 0
+    for u in targets:
+        if u.role == body.role:
+            skipped += 1
+            continue
+        old_role = u.role.value
+        u.role = body.role
+        updated += 1
+        logger.info(
+            "批量改角色 actor=%s target=%s(%s) %s -> %s",
+            user.username,
+            u.username,
+            u.id,
+            old_role,
+            body.role.value,
+        )
+
+    db.commit()
+    msg = f"已更新 {updated} 人角色为 {body.role.value}"
+    if skipped:
+        msg += f"，{skipped} 人已是目标角色已跳过"
+    return BatchRoleUpdateResult(updated=updated, skipped=skipped, message=msg)
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
