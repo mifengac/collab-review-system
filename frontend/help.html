@@ -226,6 +226,106 @@
       color: #5925dc;
     }
 
+    /* 看与改提示条（与协同高亮框同系） */
+    .view-edit-callout {
+      border: 2px solid #5925dc;
+      background: #f4f3ff;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      color: #3e1c96;
+      line-height: 1.65;
+    }
+
+    .view-edit-callout .ve-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: #5925dc;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .view-edit-callout .ve-title::before {
+      content: "ⓘ";
+      font-style: normal;
+      font-weight: 700;
+    }
+
+    .view-edit-callout .ve-line {
+      margin: 2px 0;
+    }
+
+    .view-edit-callout .ve-line strong {
+      color: #5925dc;
+    }
+
+    /* 节点内小字提示 */
+    .node .hint {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #5925dc;
+      line-height: 1.45;
+      background: #f8f6ff;
+      border-left: 2px solid #5925dc;
+      padding: 4px 6px;
+    }
+
+    /* 泳道图脚注 */
+    .swimlane-footnote {
+      border: 1px solid var(--border);
+      border-top: none;
+      background: #fafbfc;
+      padding: 8px 14px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* 谁能看 · 谁能改 速查表 */
+    .perm-section {
+      margin-top: 16px;
+    }
+
+    .perm-section .sec-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .perm-section .data {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .perm-section .data th,
+    .perm-section .data td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      line-height: 1.5;
+      vertical-align: top;
+    }
+
+    .perm-section .data th {
+      background: #f0f3f6;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .perm-section .data td:first-child {
+      font-weight: 600;
+      white-space: nowrap;
+      width: 22%;
+    }
+
     /* 亮点卡 */
     .highlights {
       display: grid;
@@ -339,6 +439,11 @@
       .entry-band .arrow {
         display: none;
       }
+
+      .perm-section .data td:first-child {
+        white-space: normal;
+        width: auto;
+      }
     }
 
     /* 打印 */
@@ -364,7 +469,9 @@
       .node,
       .hl-card,
       .collab-zone,
-      .entry-band {
+      .entry-band,
+      .view-edit-callout,
+      .perm-section .data {
         box-shadow: none;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
@@ -404,6 +511,17 @@
       <span>登录后自动同步进「OA 公文池」</span>
       <span class="arrow">→</span>
       <span>点「进入协同办理」生成事项（也可手动新建）</span>
+    </div>
+
+    <!-- 看与改：规则分开（醒目提示，避免泳道编号被误解为“查看也排队”） -->
+    <div class="view-edit-callout" style="margin-top:14px;margin-bottom:14px">
+      <div class="ve-title">看与改，规则分开</div>
+      <div class="ve-line">
+        <strong>查看不排队</strong>：材料一经上传，本事项相关人随时可打开查看最新编辑情况，领导们可同时在线
+      </div>
+      <div class="ve-line">
+        <strong>审批分先后</strong>：只有「通过 / 退回」的审批动作按 A 领导 → B 领导 顺序进行
+      </div>
     </div>
 
     <!-- 四列泳道 -->
@@ -463,6 +581,7 @@
             <div class="desc">
               强制修订模式：每处修改自动带姓名和时间。
             </div>
+            <div class="hint">指派后即可随时查看和提修订，无需等待上一环节</div>
             <div class="status-row" style="display:flex;flex-wrap:wrap;gap:4px">
               <span class="badge badge-b-review">通过 → B领导审核中</span>
             </div>
@@ -487,6 +606,7 @@
             <div class="desc">
               同样强制修订模式；可退回承办人。
             </div>
+            <div class="hint">指派后即可随时查看和提修订，无需等待上一环节</div>
             <div class="status-row">
               <span class="badge badge-b-review">B领导审核中</span>
             </div>
@@ -511,15 +631,55 @@
       </div>
     </div>
 
+    <div class="swimlane-footnote">
+      编号 ①～⑦ 为<strong>审批推进顺序</strong>；查看与修订不受编号限制——相关人指派后即可随时打开文档。
+    </div>
+
     <div class="collab-banner">
       <strong>协同改稿（核心）：</strong>
       步骤 ③④ 审阅与步骤 ⑤ 处理修订之间，领导与承办人<strong>可多人同时打开同一份文档</strong>，实时协同、互相可见。不必再打印传来传去。
     </div>
 
     <div class="legend">
-      <span class="lg-item"><span class="lg-solid"></span> 正向流转</span>
+      <span class="lg-item"><span class="lg-solid"></span> 正向流转（审批推进顺序）</span>
       <span class="lg-item"><span class="lg-dash"></span> 退回（回承办人）</span>
       <span class="lg-item"><span class="badge badge-handling">承办中</span> 等为系统真实状态词</span>
+    </div>
+
+    <!-- 谁能看 · 谁能改 -->
+    <div class="perm-section">
+      <div class="sec-title">谁能看 · 谁能改</div>
+      <table class="data">
+        <thead>
+          <tr>
+            <th>角色</th>
+            <th>能否随时查看</th>
+            <th>能否修改</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>承办人</td>
+            <td>随时可看</td>
+            <td>直接编辑 + 接受/拒绝修订</td>
+          </tr>
+          <tr>
+            <td>被指派的 A/B 领导</td>
+            <td>随时可看（B 不必等 A 审完）</td>
+            <td>仅能以修订方式改，强制留痕</td>
+          </tr>
+          <tr>
+            <td>收文员 · 督办</td>
+            <td>随时可看（只读打开编辑器、看版本列表）</td>
+            <td>不可改</td>
+          </tr>
+          <tr>
+            <td>未被指派人员</td>
+            <td>看不到本事项</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- 三亮点 -->

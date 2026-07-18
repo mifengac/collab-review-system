@@ -60,6 +60,11 @@ def test_help_page(client: TestClient):
     body = r.text
     assert "操作指南" in body
     assert "承办中" in body
+    # 看与改规则分开：避免泳道编号被误解为“查看也排队”
+    assert "查看不排队" in body
+    assert "审批分先后" in body
+    assert "谁能看" in body
+    assert "谁能改" in body
 
 
 def test_login_fail(client: TestClient):
