@@ -3,7 +3,18 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models import ActionLog, ActionType, Item, ItemStatus, User, UserRole
+from app.models import (
+    ActionLog,
+    ActionType,
+    Document,
+    FileKind,
+    FileVersion,
+    Item,
+    ItemStatus,
+    User,
+    UserRole,
+    VersionKind,
+)
 from app.services.permissions import can_cancel_item
 
 
@@ -122,14 +133,98 @@ def reject_a(db: Session, item: Item, actor: User, comment: str | None) -> Item:
     return item
 
 
+def _main_document(db: Session, item: Item) -> Document | None:
+    return (
+        db.query(Document)
+        .filter(Document.item_id == item.id, Document.kind == FileKind.main)
+        .first()
+    )
+
+
+def _current_main_version(db: Session, item: Item) -> FileVersion | None:
+    doc = _main_document(db, item)
+    if not doc or not doc.current_version:
+        return None
+    return (
+        db.query(FileVersion)
+        .filter(
+            FileVersion.document_id == doc.id,
+            FileVersion.version_no == doc.current_version,
+        )
+        .first()
+    )
+
+
+def can_prepare_finalize_archive(actor: User, item: Item) -> bool:
+    """定稿归档：承办人、指定 B 领导、管理员。"""
+    if item.status != ItemStatus.leader_b_review:
+        return False
+    if _is_admin(actor):
+        return True
+    if actor.role == UserRole.handler and item.handler_id and actor.id == item.handler_id:
+        return True
+    if item.leader_b_id and actor.id == item.leader_b_id:
+        return True
+    return False
+
+
+def prepare_finalize_archive(
+    db: Session, item: Item, actor: User, comment: str | None = None
+) -> FileVersion:
+    """
+    定稿归档：将主材料当前版本标为痕迹存档版（marked）。
+    不改变事项状态；引导用户在编辑器中接受修订后保存生成终稿。
+    """
+    if item.status != ItemStatus.leader_b_review:
+        raise WorkflowError(f"当前状态「{item.status.value}」不可定稿归档")
+    if not can_prepare_finalize_archive(actor, item):
+        raise WorkflowError("仅承办人、指定 B 领导或管理员可定稿归档", status_code=403)
+
+    version = _current_main_version(db, item)
+    if not version:
+        raise WorkflowError("尚无主材料版本，请先上传 docx")
+
+    if version.version_kind == VersionKind.final:
+        raise WorkflowError("当前已是终稿版，请直接由 B 领导定稿锁定")
+
+    if version.version_kind != VersionKind.marked:
+        version.version_kind = VersionKind.marked
+
+    detail = (
+        f"主材料 v{version.version_no} 标记为痕迹存档版；"
+        f"请在线编辑接受全部修订后保存以生成终稿版"
+    )
+    _log(
+        db,
+        item,
+        actor,
+        ActionType.mark_finalize,
+        item.status,
+        item.status,
+        comment,
+        detail=detail,
+    )
+    return version
+
+
+def mark_current_as_marked_if_needed(db: Session, item: Item) -> None:
+    """B 领导定稿时：若当前主材料仍是 normal，自动标为痕迹存档。"""
+    version = _current_main_version(db, item)
+    if version and version.version_kind == VersionKind.normal:
+        version.version_kind = VersionKind.marked
+
+
 def finalize_b(db: Session, item: Item, actor: User, comment: str | None) -> Item:
-    """指定 B 领导或管理员定稿。"""
+    """指定 B 领导或管理员定稿。定稿后文档只读。"""
     if item.status != ItemStatus.leader_b_review:
         raise WorkflowError(f"当前状态「{item.status.value}」不可定稿")
 
     if not _is_admin(actor):
         if not item.leader_b_id or actor.id != item.leader_b_id:
             raise WorkflowError("仅该事项指定的 B 领导或管理员可定稿", status_code=403)
+
+    # 定稿时若尚未标记痕迹版，自动将当前版本标为 marked 保留痕迹
+    mark_current_as_marked_if_needed(db, item)
 
     old = item.status
     item.status = ItemStatus.finalized

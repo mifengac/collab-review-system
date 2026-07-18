@@ -53,6 +53,14 @@ class FileKind(str, enum.Enum):
     attachment = "attachment"  # 附件
 
 
+class VersionKind(str, enum.Enum):
+    """文件版本类型：普通 / 痕迹存档 / 终稿。"""
+
+    normal = "normal"
+    marked = "marked"  # 带修订痕迹的存档版
+    final = "final"  # 接受修订后的最终定稿版
+
+
 class ActionType(str, enum.Enum):
     create = "创建事项"
     update = "更新事项"
@@ -64,6 +72,7 @@ class ActionType(str, enum.Enum):
     reject_a = "A领导退回"
     submit_b = "提交B领导审核"
     finalize = "定稿"
+    mark_finalize = "定稿归档"  # 标记痕迹存档版，引导出终稿
     reject_b = "B领导退回"
     archive = "归档"
     cancel = "作废"
@@ -192,6 +201,12 @@ class FileVersion(Base):
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_kind: Mapped[VersionKind] = mapped_column(
+        Enum(VersionKind),
+        default=VersionKind.normal,
+        nullable=False,
+        comment="normal普通/marked痕迹存档/final终稿",
+    )
     uploader_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

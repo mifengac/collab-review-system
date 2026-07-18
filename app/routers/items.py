@@ -16,6 +16,7 @@ from app.schemas import (
     ItemCreate,
     ItemDetail,
     ItemUpdate,
+    MarkFinalizeOut,
     SuperviseAction,
     WorkflowAction,
 )
@@ -456,6 +457,38 @@ def api_reject_a(
     item = _get_item(db, item_id)
     ensure_can_view_item(user, item)
     return _run_wf(workflow.reject_a, db, item, user, body)
+
+
+@router.post("/{item_id}/mark-finalize", response_model=MarkFinalizeOut)
+def api_mark_finalize(
+    item_id: int,
+    body: WorkflowAction,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """
+    定稿归档：将主材料当前版本标记为痕迹存档版（marked），不改变事项状态。
+    随后应在线编辑接受修订并保存生成终稿，再由 B 领导点「定稿」锁定。
+    """
+    item = _get_item(db, item_id)
+    ensure_can_view_item(user, item)
+    try:
+        version = workflow.prepare_finalize_archive(db, item, user, body.comment)
+        db.commit()
+        db.refresh(version)
+    except WorkflowError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    return MarkFinalizeOut(
+        message=(
+            f"已将主材料 v{version.version_no} 标记为痕迹存档版。"
+            "请打开在线编辑，接受全部修订后保存以生成终稿版。"
+        ),
+        document_id=version.document_id,
+        version_id=version.id,
+        version_no=version.version_no,
+        version_kind=version.version_kind,
+    )
 
 
 @router.post("/{item_id}/finalize", response_model=ItemDetail)

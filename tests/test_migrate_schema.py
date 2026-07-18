@@ -77,6 +77,95 @@ def _make_legacy_db(path: Path):
     return eng
 
 
+def _make_legacy_file_versions_db(path: Path):
+    """旧库 file_versions 无 version_kind 列。"""
+    eng = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR(64) NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(text("INSERT INTO users (id, username) VALUES (1, 'u1')"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE documents (
+                    id INTEGER PRIMARY KEY,
+                    item_id INTEGER NOT NULL,
+                    name VARCHAR(256) NOT NULL,
+                    kind VARCHAR(16),
+                    current_version INTEGER DEFAULT 0
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO documents (id, item_id, name, kind, current_version) "
+                "VALUES (1, 1, '主材料.docx', 'main', 1)"
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE file_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL,
+                    version_no INTEGER NOT NULL,
+                    original_filename VARCHAR(512) NOT NULL,
+                    stored_path VARCHAR(1024) NOT NULL,
+                    content_type VARCHAR(128),
+                    file_size INTEGER DEFAULT 0,
+                    sha256 VARCHAR(64) NOT NULL,
+                    uploader_id INTEGER NOT NULL,
+                    created_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO file_versions (
+                    document_id, version_no, original_filename, stored_path,
+                    file_size, sha256, uploader_id
+                ) VALUES (
+                    1, 1, 'old.docx', '1/old.docx',
+                    10, 'abc123legacyhash0000000000000000000000000000000000000000', 1
+                )
+                """
+            )
+        )
+    return eng
+
+
+def test_legacy_sqlite_migrate_adds_version_kind(tmp_path):
+    db_path = tmp_path / "legacy_fv.db"
+    eng = _make_legacy_file_versions_db(db_path)
+    cols_before = {c["name"] for c in inspect(eng).get_columns("file_versions")}
+    assert "version_kind" not in cols_before
+
+    migrate_schema(bind=eng)
+
+    cols = {c["name"] for c in inspect(eng).get_columns("file_versions")}
+    assert "version_kind" in cols
+    with eng.connect() as conn:
+        row = conn.execute(
+            text("SELECT version_kind, original_filename FROM file_versions WHERE version_no=1")
+        ).one()
+        assert row[0] == "normal"
+        assert row[1] == "old.docx"
+    # 幂等
+    migrate_schema(bind=eng)
+    eng.dispose()
+
+
 def test_legacy_sqlite_migrate_adds_is_active_and_preserves_data(tmp_path):
     db_path = tmp_path / "legacy.db"
     eng = _make_legacy_db(db_path)

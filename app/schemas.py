@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import ActionType, FileKind, ItemStatus, UrgencyLevel, UserRole
+from app.models import ActionType, FileKind, ItemStatus, UrgencyLevel, UserRole, VersionKind
 
 
 class ORMModel(BaseModel):
@@ -215,9 +215,24 @@ class FileVersionOut(ORMModel):
     content_type: str | None
     file_size: int
     sha256: str
+    version_kind: VersionKind = VersionKind.normal
     uploader_id: int
     created_at: datetime
     uploader: UserOut | None = None
+
+
+class MarkFinalizeOut(BaseModel):
+    """定稿归档：当前主材料标为痕迹存档版。"""
+
+    message: str
+    document_id: int | None = None
+    version_id: int | None = None
+    version_no: int | None = None
+    version_kind: VersionKind = VersionKind.marked
+    open_editor_hint: str = (
+        "请打开主材料「在线编辑」，接受全部修订后保存，将自动生成终稿版；"
+        "再由 B 领导点击「定稿」锁定事项。"
+    )
 
 
 class DocumentOut(ORMModel):

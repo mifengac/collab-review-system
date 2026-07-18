@@ -143,15 +143,7 @@ def _ensure_oa_work_item_indexes(eng: Engine) -> None:
             conn.execute(text(sql))
 
 
-def migrate_schema(bind: Engine | None = None) -> None:
-    """
-    最小幂等结构升级（create_all 不会给旧表加列）。
-    当前：为 oa_work_items 补充 is_active，并补常用查询索引。
-
-    is_active 升级失败时抛出 RuntimeError，禁止带着错误结构继续启动。
-    日志仅记录受控中文说明与异常类型，不输出连接串。
-    """
-    eng = _resolve_bind(bind)
+def _migrate_oa_work_items_is_active(eng: Engine) -> None:
     cols = _table_columns("oa_work_items", eng)
     if not cols:
         return  # 新库由 create_all 建全表（含 is_active）
@@ -204,6 +196,66 @@ def migrate_schema(bind: Engine | None = None) -> None:
             type(exc).__name__,
         )
         raise RuntimeError("数据库结构升级失败：无法创建 oa_work_items 查询索引") from exc
+
+
+def _migrate_file_versions_version_kind(eng: Engine) -> None:
+    """为 file_versions 补充 version_kind（normal/marked/final），默认 normal。"""
+    cols = _table_columns("file_versions", eng)
+    if not cols:
+        return  # 新库 create_all 已含该列
+
+    if "version_kind" in cols:
+        return
+
+    dialect = eng.dialect.name
+    try:
+        with eng.begin() as conn:
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        "ALTER TABLE file_versions "
+                        "ADD COLUMN version_kind VARCHAR(16) NOT NULL DEFAULT 'normal'"
+                    )
+                )
+            else:
+                # PostgreSQL / 金仓：用 varchar 存枚举值，兼容 SQLAlchemy Enum
+                conn.execute(
+                    text(
+                        "ALTER TABLE file_versions "
+                        "ADD COLUMN IF NOT EXISTS version_kind "
+                        "VARCHAR(16) NOT NULL DEFAULT 'normal'"
+                    )
+                )
+        logger.info("schema migrate: 已为 file_versions 补充 version_kind 字段")
+    except Exception as exc:
+        logger.error(
+            "schema migrate: version_kind 字段升级失败，类型=%s",
+            type(exc).__name__,
+        )
+        raise RuntimeError(
+            "数据库结构升级失败：无法为 file_versions 增加 version_kind 字段"
+        ) from exc
+
+    cols_after = _table_columns("file_versions", eng)
+    if "version_kind" not in cols_after:
+        raise RuntimeError(
+            "数据库结构升级失败：file_versions.version_kind 字段仍不存在"
+        )
+
+
+def migrate_schema(bind: Engine | None = None) -> None:
+    """
+    最小幂等结构升级（create_all 不会给旧表加列）。
+    当前：
+    - oa_work_items.is_active + 查询索引
+    - file_versions.version_kind（痕迹版/终稿标记）
+
+    关键失败时抛出 RuntimeError，禁止带着错误结构继续启动。
+    日志仅记录受控中文说明与异常类型，不输出连接串。
+    """
+    eng = _resolve_bind(bind)
+    _migrate_oa_work_items_is_active(eng)
+    _migrate_file_versions_version_kind(eng)
 
 
 def init_db() -> None:

@@ -11,7 +11,16 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
-from app.models import Document, FileVersion, Item, ItemStatus, User, UserRole
+from app.models import (
+    Document,
+    FileKind,
+    FileVersion,
+    Item,
+    ItemStatus,
+    User,
+    UserRole,
+    VersionKind,
+)
 from app.services.files import MAX_SIZE, resolve_file_path, save_bytes_as_new_version
 from app.services.permissions import LOCKED_STATUSES, can_view_item
 
@@ -345,6 +354,33 @@ def handle_callback_save(
         filename = doc.name if (doc.name or "").lower().endswith(".docx") else f"{doc.name or 'edited'}.docx"
         if not filename.lower().endswith(".docx"):
             filename = f"{filename}.docx"
+
+        # 定稿归档后再次保存：主材料新版本标为终稿
+        kind = VersionKind.normal
+        if doc.kind == FileKind.main and item.status == ItemStatus.leader_b_review:
+            has_marked = (
+                db.query(FileVersion)
+                .filter(
+                    FileVersion.document_id == doc.id,
+                    FileVersion.version_kind == VersionKind.marked,
+                )
+                .first()
+                is not None
+            )
+            has_final = (
+                db.query(FileVersion)
+                .filter(
+                    FileVersion.document_id == doc.id,
+                    FileVersion.version_kind == VersionKind.final,
+                )
+                .first()
+                is not None
+            )
+            # 仅承办人/admin（有权接受修订的人）保存时才升级为终稿；
+            # 领导在标记后再修改的保存仍是普通版，防止带新修订的文件被误标为终稿
+            if has_marked and not has_final and can_review_onlyoffice(actor, item):
+                kind = VersionKind.final
+
         save_bytes_as_new_version(
             db,
             item,
@@ -353,6 +389,7 @@ def handle_callback_save(
             raw,
             original_filename=filename,
             action_detail_prefix="onlyoffice保存",
+            version_kind=kind,
         )
     except HTTPException as exc:
         logger.warning(

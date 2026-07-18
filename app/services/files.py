@@ -10,7 +10,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import ActionType, Document, FileKind, FileVersion, Item, User
+from app.models import ActionType, Document, FileKind, FileVersion, Item, User, VersionKind
 from app.services.workflow import write_log
 
 # 允许的扩展名
@@ -135,6 +135,7 @@ async def save_upload(
         content_type=file.content_type,
         file_size=len(raw),
         sha256=sha,
+        version_kind=VersionKind.normal,
         uploader_id=actor.id,
     )
     doc.current_version = next_ver
@@ -173,6 +174,7 @@ def save_bytes_as_new_version(
     original_filename: str,
     content_type: str | None = None,
     action_detail_prefix: str = "onlyoffice",
+    version_kind: VersionKind = VersionKind.normal,
 ) -> FileVersion:
     """将字节内容写入文档的新版本（不可覆盖历史）。供 ONLYOFFICE 回调等使用。"""
     if not raw:
@@ -206,12 +208,18 @@ def save_bytes_as_new_version(
         or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         file_size=len(raw),
         sha256=sha,
+        version_kind=version_kind or VersionKind.normal,
         uploader_id=actor.id,
     )
     doc.current_version = next_ver
     db.add(version)
     db.flush()
 
+    kind_label = {
+        VersionKind.normal: "",
+        VersionKind.marked: "[痕迹存档] ",
+        VersionKind.final: "[终稿] ",
+    }.get(version.version_kind, "")
     write_log(
         db,
         item,
@@ -219,7 +227,7 @@ def save_bytes_as_new_version(
         ActionType.upload,
         comment=None,
         detail=(
-            f"{action_detail_prefix} {original} v{next_ver} "
+            f"{kind_label}{action_detail_prefix} {original} v{next_ver} "
             f"({len(raw)} bytes, sha256={sha[:12]}…)"
         ),
     )

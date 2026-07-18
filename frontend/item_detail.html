@@ -87,13 +87,21 @@
           `<button class="btn btn-danger" type="button" data-act="reject-a">A 领导退回</button>`
         );
       }
-      if (s === "B领导审核中" && isLeaderB) {
-        btns.push(
-          `<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`
-        );
-        btns.push(
-          `<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`
-        );
+      if (s === "B领导审核中") {
+        // 定稿归档：承办人 / B 领导 / 管理员 — 先标痕迹版，再在线编辑出终稿
+        if (isHandler || isLeaderB) {
+          btns.push(
+            `<button class="btn btn-primary" type="button" data-act="mark-finalize">定稿归档（痕迹版）</button>`
+          );
+        }
+        if (isLeaderB) {
+          btns.push(
+            `<button class="btn btn-success" type="button" data-act="finalize">B 领导定稿</button>`
+          );
+          btns.push(
+            `<button class="btn btn-danger" type="button" data-act="reject-b">B 领导退回</button>`
+          );
+        }
       }
       if (canAssign) {
         btns.push(`<button class="btn" type="button" id="btnAssign">分派/调整参与人</button>`);
@@ -156,6 +164,12 @@
       `;
     }
 
+    function versionKindBadge(kind) {
+      if (kind === "marked") return '<span class="badge badge-important">痕迹存档</span>';
+      if (kind === "final") return '<span class="badge badge-done">终稿</span>';
+      return '<span class="badge">普通</span>';
+    }
+
     function renderDocs() {
       if (!docs.length) {
         return `<p class="hint">暂无文件，请上传主材料或附件。</p>`;
@@ -167,9 +181,10 @@
             .map(
               (v) => `<tr>
               <td>v${v.version_no}${v.version_no === d.current_version ? ' <span class="badge badge-done">当前</span>' : ""}</td>
+              <td>${versionKindBadge(v.version_kind || "normal")}</td>
               <td>${escapeHtml(v.original_filename)}</td>
               <td>${fileSize(v.file_size)}</td>
-              <td style="font-family:var(--mono);font-size:11px">${escapeHtml((v.sha256 || "").slice(0, 16))}…</td>
+              <td style="font-family:var(--mono);font-size:11px" title="${escapeHtml(v.sha256 || "")}">${escapeHtml((v.sha256 || "").slice(0, 12))}…</td>
               <td>${userName(v.uploader)}</td>
               <td>${fmtTime(v.created_at)}</td>
               <td>
@@ -182,7 +197,7 @@
             <div class="panel" style="margin-bottom:10px">
               <div class="panel-hd">
                 <span>${d.kind === "main" ? "【主材料】" : "【附件】"} ${escapeHtml(d.name)}
-                  <span class="hint">当前 v${d.current_version}</span>
+                  <span class="hint">当前 v${d.current_version} · 版本时间线</span>
                 </span>
                 <span>
                   ${
@@ -197,10 +212,15 @@
               <div class="panel-bd table-wrap">
                 <table class="data">
                   <thead><tr>
-                    <th>版本</th><th>文件名</th><th>大小</th><th>SHA256</th><th>上传人</th><th>上传时间</th><th>操作</th>
+                    <th>版本</th><th>类型</th><th>文件名</th><th>大小</th><th>SHA256</th><th>保存人</th><th>时间</th><th>操作</th>
                   </tr></thead>
-                  <tbody>${rows || `<tr><td colspan="7" class="empty-row">无版本</td></tr>`}</tbody>
+                  <tbody>${rows || `<tr><td colspan="8" class="empty-row">无版本</td></tr>`}</tbody>
                 </table>
+                ${
+                  d.kind === "main"
+                    ? `<p class="hint" style="margin-top:8px">定稿流程：B 审核中 →「定稿归档」标痕迹版 → 在线编辑接受修订并保存生成终稿 → B 领导「定稿」锁定（之后只读）。</p>`
+                    : ""
+                }
               </div>
             </div>`;
         })
@@ -373,6 +393,29 @@
                 await reload();
               },
               true
+            );
+            return;
+          }
+          if (act === "mark-finalize") {
+            openModal(
+              "定稿归档（标记痕迹存档版）",
+              async (comment) => {
+                const r = await api("/api/items/" + id + "/mark-finalize", {
+                  method: "POST",
+                  body: JSON.stringify({ comment: comment || null }),
+                });
+                toast(r.message || "已标记痕迹存档版", "success");
+                if (r.document_id && window.__OO_ENABLED) {
+                  if (confirm("是否立即打开在线编辑，接受全部修订并保存终稿？")) {
+                    window.open(
+                      "/editor.html?document_id=" + encodeURIComponent(r.document_id),
+                      "_blank"
+                    );
+                  }
+                }
+                await reload();
+              },
+              false
             );
             return;
           }
