@@ -53,6 +53,15 @@ def test_health(client: TestClient):
     assert r.json()["status"] == "ok"
 
 
+def test_help_page(client: TestClient):
+    """操作指南静态页可匿名访问，用语与系统状态一致。"""
+    r = client.get("/help.html")
+    assert r.status_code == 200
+    body = r.text
+    assert "操作指南" in body
+    assert "承办中" in body
+
+
 def test_login_fail(client: TestClient):
     r = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
     assert r.status_code == 401

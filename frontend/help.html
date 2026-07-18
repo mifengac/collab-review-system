@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>操作指南 - 材料协同办理系统</title>
+  <link rel="stylesheet" href="/assets/css/style.css" />
+  <style>
+    /* 操作指南页专用（纯 CSS，无外部依赖） */
+    .help-page {
+      min-height: 100%;
+      background: var(--bg);
+    }
+
+    .help-top {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .help-top h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .help-top .sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .help-top .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .help-body {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 16px 20px 32px;
+    }
+
+    .help-intro {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* 入口带 */
+    .entry-band {
+      background: linear-gradient(90deg, #1a4f8b 0%, #2a6cb0 100%);
+      color: #fff;
+      border: 1px solid #0f355f;
+      padding: 12px 16px;
+      margin-bottom: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+
+    .entry-band .step-tag {
+      background: rgba(255, 255, 255, 0.18);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      padding: 2px 8px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .entry-band .arrow {
+      opacity: 0.7;
+    }
+
+    /* 四列泳道 */
+    .swimlanes {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-top: none;
+    }
+
+    .lane {
+      border-right: 1px solid var(--border);
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .lane:last-child {
+      border-right: none;
+    }
+
+    .lane-hd {
+      padding: 10px 8px;
+      text-align: center;
+      font-weight: 600;
+      font-size: 13px;
+      border-bottom: 2px solid var(--border);
+      background: #f0f3f6;
+    }
+
+    .lane-hd.lane-office { border-bottom-color: #1a4f8b; color: #1a4f8b; }
+    .lane-hd.lane-handler { border-bottom-color: #175cd3; color: #175cd3; }
+    .lane-hd.lane-a { border-bottom-color: #5925dc; color: #5925dc; }
+    .lane-hd.lane-b { border-bottom-color: #c11574; color: #c11574; }
+
+    .lane-body {
+      padding: 12px 10px 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    /* 流程节点卡片 */
+    .node {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 10px 8px;
+      position: relative;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .node .num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    .node .title {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .node .desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .node .status-row {
+      margin-top: 8px;
+    }
+
+    /* 正向箭头（纵向） */
+    .flow-down {
+      text-align: center;
+      color: var(--primary);
+      font-size: 16px;
+      line-height: 1;
+      padding: 4px 0;
+      user-select: none;
+    }
+
+    /* 退回虚线提示 */
+    .reject-hint {
+      margin-top: 8px;
+      padding: 6px 8px;
+      border: 1px dashed var(--danger);
+      background: var(--danger-bg);
+      color: var(--danger);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    /* 协同改稿高亮框 */
+    .collab-zone {
+      margin-top: 10px;
+      border: 2px solid #5925dc;
+      background: #f8f6ff;
+      padding: 10px;
+      border-radius: var(--radius);
+    }
+
+    .collab-zone .cz-title {
+      font-weight: 700;
+      font-size: 12px;
+      color: #5925dc;
+      margin-bottom: 4px;
+    }
+
+    .collab-zone .cz-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    /* 跨列协同说明条（泳道下方） */
+    .collab-banner {
+      border: 2px solid #5925dc;
+      background: #f4f3ff;
+      border-top: none;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: #3e1c96;
+      line-height: 1.6;
+    }
+
+    .collab-banner strong {
+      color: #5925dc;
+    }
+
+    /* 亮点卡 */
+    .highlights {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .hl-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 14px;
+    }
+
+    .hl-card .hl-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--primary);
+      margin-bottom: 6px;
+    }
+
+    .hl-card .hl-title::before {
+      content: "✓ ";
+      color: var(--success);
+    }
+
+    .hl-card .hl-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .supervisor-note {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 8px;
+    }
+
+    .legend {
+      margin-top: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px 20px;
+      align-items: center;
+    }
+
+    .legend .lg-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend .lg-solid {
+      width: 28px;
+      height: 0;
+      border-top: 2px solid var(--primary);
+      position: relative;
+    }
+
+    .legend .lg-solid::after {
+      content: "▼";
+      position: absolute;
+      right: -2px;
+      top: -9px;
+      font-size: 10px;
+      color: var(--primary);
+    }
+
+    .legend .lg-dash {
+      width: 28px;
+      height: 0;
+      border-top: 2px dashed var(--danger);
+    }
+
+    /* 窄屏：竖向卡片流 */
+    @media (max-width: 900px) {
+      .swimlanes {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .lane {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .lane:last-child {
+        border-bottom: none;
+      }
+
+      .lane-body {
+        padding: 12px 12px 16px;
+      }
+
+      .highlights {
+        grid-template-columns: 1fr;
+      }
+
+      .entry-band {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .entry-band .arrow {
+        display: none;
+      }
+    }
+
+    /* 打印 */
+    @media print {
+      .help-page {
+        background: #fff;
+      }
+
+      .help-top .actions,
+      .no-print {
+        display: none !important;
+      }
+
+      .help-body {
+        max-width: none;
+        padding: 0;
+      }
+
+      .swimlanes {
+        break-inside: avoid;
+      }
+
+      .node,
+      .hl-card,
+      .collab-zone,
+      .entry-band {
+        box-shadow: none;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      @page {
+        size: A4 portrait;
+        margin: 12mm;
+      }
+    }
+  </style>
+</head>
+<body class="help-page">
+  <div class="help-top">
+    <div>
+      <h1>操作指南 · 材料怎么走、怎么协作</h1>
+      <div class="sub">材料协同办理系统 · 一看就懂的办理流程</div>
+    </div>
+    <div class="actions no-print">
+      <button type="button" class="btn btn-sm" onclick="window.print()">打印本页</button>
+      <a class="btn btn-sm" href="/login.html">去登录</a>
+      <a class="btn btn-sm btn-primary" href="/index.html">进入工作台</a>
+    </div>
+  </div>
+
+  <div class="help-body">
+    <div class="help-intro">
+      材料从 OA 进来后，在系统里完成<strong>分派 → 起草 → 领导审核 → 协同改稿 → 定稿归档</strong>。
+      下面按角色分列展示：事情落到谁的列里，就由谁负责。状态名称与系统界面完全一致。
+    </div>
+
+    <!-- OA 入口带 -->
+    <div class="entry-band">
+      <span class="step-tag">来文</span>
+      <span>OA 公文</span>
+      <span class="arrow">→</span>
+      <span>登录后自动同步进「OA 公文池」</span>
+      <span class="arrow">→</span>
+      <span>点「进入协同办理」生成事项（也可手动新建）</span>
+    </div>
+
+    <!-- 四列泳道 -->
+    <div class="swimlanes">
+      <!-- 收文员 -->
+      <div class="lane">
+        <div class="lane-hd lane-office">收文员</div>
+        <div class="lane-body">
+          <div class="node">
+            <div class="title"><span class="num">1</span> 分派</div>
+            <div class="desc">指定承办人、A 领导、B 领导，启动办理。</div>
+            <div class="status-row">
+              <span class="badge badge-handling">承办中</span>
+            </div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="node" style="opacity:0.75">
+            <div class="title">后续由承办人与领导推进</div>
+            <div class="desc">收文员完成分派后，流程进入承办人列。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 承办人 -->
+      <div class="lane">
+        <div class="lane-hd lane-handler">承办人</div>
+        <div class="lane-body">
+          <div class="node">
+            <div class="title"><span class="num">2</span> 起草</div>
+            <div class="desc">上传主材料 docx，可在线编辑；完成后提交 A 领导。</div>
+            <div class="status-row">
+              <span class="badge badge-a-review">A领导审核中</span>
+            </div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="node">
+            <div class="title"><span class="num">5</span> 逐条处理修订</div>
+            <div class="desc">领导提出的修订，承办人逐条接受或拒绝。</div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="node">
+            <div class="title"><span class="num">6</span> 定稿归档</div>
+            <div class="desc">
+              点「定稿归档」生成<strong>痕迹存档版</strong>（谁改了什么永久留档）；
+              在编辑器中接受全部修订并保存，生成<strong>终稿版</strong>。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- A 领导 -->
+      <div class="lane">
+        <div class="lane-hd lane-a">A 领导</div>
+        <div class="lane-body">
+          <div class="node">
+            <div class="title"><span class="num">3</span> 在线审阅</div>
+            <div class="desc">
+              强制修订模式：每处修改自动带姓名和时间。
+            </div>
+            <div class="status-row" style="display:flex;flex-wrap:wrap;gap:4px">
+              <span class="badge badge-b-review">通过 → B领导审核中</span>
+            </div>
+            <div class="reject-hint">
+              退回 → 红色虚线回承办人 · 状态「A领导退回」
+            </div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="collab-zone">
+            <div class="cz-title">协同改稿</div>
+            <div class="cz-desc">可与承办人同时打开同一份文档，实时互见。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- B 领导 -->
+      <div class="lane">
+        <div class="lane-hd lane-b">B 领导</div>
+        <div class="lane-body">
+          <div class="node">
+            <div class="title"><span class="num">4</span> 在线审阅</div>
+            <div class="desc">
+              同样强制修订模式；可退回承办人。
+            </div>
+            <div class="status-row">
+              <span class="badge badge-b-review">B领导审核中</span>
+            </div>
+            <div class="reject-hint">
+              退回 → 红色虚线回承办人 · 状态「B领导退回」
+            </div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="collab-zone">
+            <div class="cz-title">协同改稿</div>
+            <div class="cz-desc">领导与承办人可同时改，互相可见。</div>
+          </div>
+          <div class="flow-down">▼</div>
+          <div class="node">
+            <div class="title"><span class="num">7</span> 定稿锁定</div>
+            <div class="desc">点「定稿」后状态变为「已定稿」，全员只读；痕迹版与终稿版随时可查。</div>
+            <div class="status-row">
+              <span class="badge badge-done">已定稿</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="collab-banner">
+      <strong>协同改稿（核心）：</strong>
+      步骤 ③④ 审阅与步骤 ⑤ 处理修订之间，领导与承办人<strong>可多人同时打开同一份文档</strong>，实时协同、互相可见。不必再打印传来传去。
+    </div>
+
+    <div class="legend">
+      <span class="lg-item"><span class="lg-solid"></span> 正向流转</span>
+      <span class="lg-item"><span class="lg-dash"></span> 退回（回承办人）</span>
+      <span class="lg-item"><span class="badge badge-handling">承办中</span> 等为系统真实状态词</span>
+    </div>
+
+    <!-- 三亮点 -->
+    <div class="highlights">
+      <div class="hl-card">
+        <div class="hl-title">同时改不冲突</div>
+        <div class="hl-desc">同一份文档实时协同编辑，不再传来传去、版本对不上。</div>
+      </div>
+      <div class="hl-card">
+        <div class="hl-title">谁改的一目了然</div>
+        <div class="hl-desc">修订自动带姓名、时间、颜色，无法关闭，责任清楚。</div>
+      </div>
+      <div class="hl-card">
+        <div class="hl-title">每一版都留痕</div>
+        <div class="hl-desc">每次保存生成版本；痕迹存档版与终稿版并存，可随时下载对照。</div>
+      </div>
+    </div>
+
+    <div class="supervisor-note">
+      督办人员全程可查看、催办，不参与修改。
+    </div>
+  </div>
+</body>
+</html>
