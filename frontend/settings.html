@@ -405,6 +405,28 @@
             </div>
           </div>
 
+          ${
+            isAdmin
+              ? `
+          <div class="panel">
+            <div class="panel-hd">审计导出（管理员）</div>
+            <div class="panel-bd">
+              <p class="hint" style="margin-bottom:8px">导出 UTF-8 BOM 的 CSV，Excel 可直接打开。导出动作会写入操作日志。</p>
+              <div class="toolbar">
+                <select id="auditKind">
+                  <option value="action_logs">事项操作日志</option>
+                  <option value="oa_sync_logs">OA 同步日志</option>
+                </select>
+                <input type="date" id="auditFrom" />
+                <span class="hint">至</span>
+                <input type="date" id="auditTo" />
+                <button type="button" class="btn btn-sm btn-primary" id="btnAuditExport">导出 CSV</button>
+              </div>
+            </div>
+          </div>`
+              : ""
+          }
+
           <div class="modal-mask" id="userModal">
             <div class="modal" style="width:460px">
               <div class="modal-hd">
@@ -460,6 +482,32 @@
             toast(e.message, "error");
           }
         };
+
+        if (isAdmin) {
+          const btnExp = document.getElementById("btnAuditExport");
+          if (btnExp) {
+            btnExp.onclick = async () => {
+              const kind = document.getElementById("auditKind").value;
+              const f = document.getElementById("auditFrom").value;
+              const t = document.getElementById("auditTo").value;
+              let url = "/api/audit/export?kind=" + encodeURIComponent(kind);
+              if (f) url += "&from=" + encodeURIComponent(f);
+              if (t) url += "&to=" + encodeURIComponent(t);
+              try {
+                const res = await api(url);
+                const blob = await res.blob();
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = kind + ".csv";
+                a.click();
+                URL.revokeObjectURL(a.href);
+                toast("导出已开始下载", "success");
+              } catch (e) {
+                toast(e.message, "error");
+              }
+            };
+          }
+        }
 
         if (canListUsers) {
           document.getElementById("btnUserSearch").onclick = () => reloadUsersOnly();

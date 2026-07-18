@@ -243,12 +243,38 @@ def _migrate_file_versions_version_kind(eng: Engine) -> None:
         )
 
 
+def _migrate_action_logs_item_id_nullable(eng: Engine) -> None:
+    """
+    action_logs.item_id 改为可空（系统级审计导出等）。
+    PostgreSQL/金仓可 ALTER；SQLite 旧库无法简单改列，新库由 create_all 建为可空。
+    """
+    cols = _table_columns("action_logs", eng)
+    if not cols or "item_id" not in cols:
+        return
+    dialect = eng.dialect.name
+    if dialect == "sqlite":
+        return
+    try:
+        with eng.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE action_logs ALTER COLUMN item_id DROP NOT NULL")
+            )
+        logger.info("schema migrate: action_logs.item_id 已允许为空")
+    except Exception as exc:
+        # 可能已经是可空，不阻断启动
+        logger.warning(
+            "schema migrate: action_logs.item_id 可空升级跳过，类型=%s",
+            type(exc).__name__,
+        )
+
+
 def migrate_schema(bind: Engine | None = None) -> None:
     """
     最小幂等结构升级（create_all 不会给旧表加列）。
     当前：
     - oa_work_items.is_active + 查询索引
     - file_versions.version_kind（痕迹版/终稿标记）
+    - action_logs.item_id 可空（PG/金仓）
 
     关键失败时抛出 RuntimeError，禁止带着错误结构继续启动。
     日志仅记录受控中文说明与异常类型，不输出连接串。
@@ -256,6 +282,7 @@ def migrate_schema(bind: Engine | None = None) -> None:
     eng = _resolve_bind(bind)
     _migrate_oa_work_items_is_active(eng)
     _migrate_file_versions_version_kind(eng)
+    _migrate_action_logs_item_id_nullable(eng)
 
 
 def init_db() -> None:

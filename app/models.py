@@ -78,6 +78,7 @@ class ActionType(str, enum.Enum):
     cancel = "作废"
     supervise = "督办催办"
     comment = "填写意见"
+    export_audit = "审计导出"
 
 
 class User(Base):
@@ -215,12 +216,14 @@ class FileVersion(Base):
 
 
 class ActionLog(Base):
-    """操作留痕 / 流转时间线。"""
+    """操作留痕 / 流转时间线。item_id 可空：系统级动作（如审计导出）。"""
 
     __tablename__ = "action_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), nullable=False, index=True)
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("items.id"), nullable=True, index=True
+    )
     actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
