@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -27,26 +27,21 @@ def _extract_bearer(authorization: str | None) -> str | None:
 
 
 @router.post("/callback", response_model=OnlyOfficeCallbackOut)
-async def onlyoffice_callback(
-    request: Request,
+def onlyoffice_callback(
     db: Annotated[Session, Depends(get_db)],
     document_id: Annotated[int, Query(description="文档 ID")],
+    body: Annotated[dict[str, Any], Body()],
     authorization: Annotated[str | None, Header()] = None,
 ):
     """
     Document Server 保存回调。
     必须校验 JWT（Authorization Bearer 或 body.token）；日志不记录 token。
+    注意：必须是同步 def——内部用同步 httpx 下载编辑结果，若写成 async
+    会阻塞事件循环，下载期间整个应用无法响应任何请求。
     """
     settings = get_settings()
     if not is_onlyoffice_ready(settings):
         raise HTTPException(status_code=503, detail="在线编辑未启用")
-
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="回调 body 无效") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="回调 body 无效")
 
     token = _extract_bearer(authorization) or (body.get("token") if isinstance(body.get("token"), str) else None)
     if not token:
