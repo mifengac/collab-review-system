@@ -319,7 +319,7 @@ docker compose logs -f
 ./scripts/build-and-export.sh /path/to/export-dir
 ```
 
-脚本会构建 `collab-review-system:1.0.2`，导出 `.tar` / `.tar.gz`，并复制 `docker-compose.yml`、`.env.example` 与内网部署说明。
+脚本默认构建 `collab-review-system:latest`，导出 `.tar` / `.tar.gz`，并复制 `docker-compose.yml`、`.env.example` 与内网部署说明。标签固定 `latest`，内网每次 `docker load` 覆盖即可，无需改 compose / `.env`。
 
 停止：
 
@@ -339,9 +339,9 @@ DATABASE_URL=postgresql://user:password@host:5432/collab_review
 DATABASE_URL=postgresql://user:password@host:54321/collab_review
 ```
 
-镜像 **1.0.1** 起已内置 `psycopg2-binary`；**1.0.2** 起兼容人大金仓 `KingbaseES` 的 `version()` 字符串（否则 SQLAlchemy 会报 `Could not determine version from string`）。
+镜像已内置 `psycopg2-binary`，并兼容人大金仓 `KingbaseES` 的 `version()` 字符串（否则 SQLAlchemy 会报 `Could not determine version from string`）。
 
-若仍报驱动或版本解析错误，请确认镜像标签为 `collab-review-system:1.0.2`。
+若仍报驱动或版本解析错误，请确认已 `docker load` 最新的 `collab-review-system:latest`。
 
 应用使用标准 SQLAlchemy URL（金仓可用 `postgresql://...` 协议）。模型未绑定 SQLite 专有语法（外键、枚举等在 PG/金仓上可用）。生产建议再引入 Alembic 管理迁移。
 

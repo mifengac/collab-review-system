@@ -1,14 +1,15 @@
 # 材料协同办理系统 — 内网离线可运行
 # 使用前：
-#   1. docker load -i collab-review-system-1.0.2.tar
+#   1. docker load -i collab-review-system-latest.tar
 #   2. cp .env.example .env   # 按内网实际修改
 #   3. docker compose up -d
 #
 # 说明：使用已导出镜像，不在内网执行 build，无需访问互联网。
+# 镜像固定标签 latest：每次重新 load 覆盖即可，无需改本文件或 .env。
 
 services:
   collab-review:
-    image: collab-review-system:1.0.2
+    image: collab-review-system:latest
     container_name: collab-review-system
     ports:
       - "${APP_PORT:-5002}:5002"

@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 IMAGE_NAME="${IMAGE_NAME:-collab-review-system}"
-IMAGE_TAG="${IMAGE_TAG:-1.0.2}"
+# 固定 latest：内网每次 load 覆盖同名标签，无需改 docker-compose / .env
+IMAGE_TAG="${IMAGE_TAG:-latest}"
 FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 # 默认导出到仓库内 dist/；可用第一个参数覆盖，例如：./scripts/build-and-export.sh /path/to/out
 OUT_DIR="${1:-$ROOT/dist}"
@@ -41,7 +42,6 @@ echo "==> 2) 构建业务镜像 $FULL_IMAGE"
 docker build \
   --build-arg BASE_IMAGE=python:3.11-slim \
   -t "$FULL_IMAGE" \
-  -t "${IMAGE_NAME}:latest" \
   .
 
 echo "==> 3) 导出镜像 -> ${OUT_DIR}/${TAR_NAME}"
@@ -60,19 +60,22 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
 ========================================
 
 一、准备文件（本目录应有）
-  - collab-review-system-1.0.2.tar      （或 .tar.gz）
+  - collab-review-system-latest.tar      （或 .tar.gz）
   - docker-compose.yml
   - .env.example  /  .env.template
 
-二、加载镜像
+二、加载镜像（固定标签 latest，覆盖旧镜像即可）
   # 未压缩
-  docker load -i collab-review-system-1.0.2.tar
+  docker load -i collab-review-system-latest.tar
 
   # 若使用 gzip
-  gunzip -c collab-review-system-1.0.2.tar.gz | docker load
+  gunzip -c collab-review-system-latest.tar.gz | docker load
 
   # 确认
   docker images | grep collab-review-system
+
+  # 已有容器在跑时，load 后重建：
+  docker compose up -d --force-recreate
 
 三、配置环境变量
   cp .env.example .env
@@ -81,9 +84,11 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
   #   - APP_PORT 默认 5002
   #   - 数据库：默认 SQLite；若用 PostgreSQL / 人大金仓 Kingbase：
   #       DATABASE_URL=postgresql://user:password@内网IP:端口/库名
-  #     镜像 1.0.1+ 含 psycopg2；1.0.2+ 兼容 Kingbase version() 字符串
+  #     镜像已含 psycopg2，并兼容 Kingbase version() 字符串
   #   - 内网 OA 时设置 AUTH_MODE=mixed 或 oa，并填写 OA_BASE_URL
+  #   - 真实 OA 登录前会自动 GET OA_WARMUP_PATH（默认 /hportal/）热身建会话
   #   - SEED_DEMO_USERS 生产请保持 false
+  # 镜像标签固定 collab-review-system:latest，日常升级无需改 .env / compose
 
 四、启动
   docker compose up -d
@@ -109,8 +114,9 @@ cat > "$OUT_DIR/内网部署说明.txt" << 'EOF'
 八、注意
   - 内网无互联网，不要执行 docker compose build
   - 不要提交含真实密码的 .env 到公开仓库
-  - 镜像标签必须为 collab-review-system:1.0.2（与 compose 中 image 一致）
-  - 若报 No module named psycopg2 或 Kingbase version AssertionError：请确认已 load 1.0.2
+  - 镜像标签固定为 collab-review-system:latest（与 compose 中 image 一致）
+  - 升级：重新 load 同名 tar 覆盖 latest，再 docker compose up -d --force-recreate
+  - 若报 No module named psycopg2 或 Kingbase version AssertionError：请确认已 load 最新 latest 包
 EOF
 
 echo "==> 完成"
