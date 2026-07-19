@@ -242,25 +242,21 @@ def login(body: LoginRequest, db: Annotated[Session, Depends(get_db)]):
         user, oa_sync = _login_oa(db, username, password)
         return _issue_token(user, oa_sync)
 
-    # mixed：优先 OA；仅当 OA 服务不可用（503）时允许本地 admin 维护登录
+    # mixed：admin 是纯本地维护账号（OA 中不存在），直接本地验证，
+    # 否则 OA 正常运行时管理员将永远无法登录做用户管理
+    if username == settings.admin_username:
+        return _issue_token(
+            _login_local(db, username, password),
+            OASyncStatusOut(enabled=False, success=False, error="本地管理员登录，不同步 OA"),
+        )
+
+    # 其他用户：优先 OA；仅当 OA 服务不可用（503）时提示联系管理员
     try:
         user, oa_sync = _login_oa(db, username, password)
         return _issue_token(user, oa_sync)
     except HTTPException as exc:
         if exc.status_code != 503:
             raise
-        if username == settings.admin_username:
-            try:
-                # 本地 fallback 不触发 OA 同步
-                return _issue_token(
-                    _login_local(db, username, password),
-                    OASyncStatusOut(enabled=False, success=False, error="本地管理员回落登录"),
-                )
-            except HTTPException:
-                raise HTTPException(
-                    status_code=503,
-                    detail="OA 暂不可用，且本地管理员认证失败",
-                ) from exc
         raise HTTPException(
             status_code=503,
             detail="OA 暂不可用，请联系管理员（普通用户不可本地登录）",

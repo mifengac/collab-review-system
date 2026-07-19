@@ -220,6 +220,22 @@ def test_mixed_oa_unavailable_admin_fallback(client: TestClient):
     assert r.json()["user"]["username"] == "admin"
 
 
+def test_mixed_admin_logs_in_locally_even_when_oa_up(client: TestClient):
+    """mixed 模式下 admin 直接本地验证，凭据绝不发往 OA（OA 正常时也能登录）。"""
+    _set_mode("mixed")
+    with patch(
+        "app.routers.auth.authenticate_oa_user",
+        side_effect=OAAuthError("OA 账号或密码错误"),
+    ) as mock_oa:
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "Admin@123456"},
+        )
+    assert r.status_code == 200
+    assert r.json()["user"]["username"] == "admin"
+    mock_oa.assert_not_called()
+
+
 def test_mixed_oa_unavailable_normal_user_no_fallback(client: TestClient):
     _set_mode("local")
     admin = client.post(
